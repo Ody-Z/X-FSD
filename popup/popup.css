@@ -1,0 +1,321 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  min-height: 480px;
+  background: #000;
+  color: #e7e9ea;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+}
+
+.container {
+  padding: 16px;
+}
+
+header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: #e7e9ea;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #2f3336;
+  padding-bottom: 0;
+}
+
+.tab {
+  flex: 1;
+  background: none;
+  border: none;
+  color: #71767b;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 0;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tab:hover {
+  color: #e7e9ea;
+}
+
+.tab.active {
+  color: #1d9bf0;
+  border-bottom-color: #1d9bf0;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+.field {
+  margin-bottom: 14px;
+  position: relative;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #71767b;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  background: #16181c;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  color: #e7e9ea;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: #1d9bf0;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.char-count {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  font-size: 11px;
+  color: #71767b;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.folder-path {
+  flex: 1;
+  font-size: 12px;
+  color: #71767b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #16181c;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.btn {
+  background: #2f3336;
+  border: none;
+  color: #e7e9ea;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn:hover {
+  background: #3a3d41;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: #1d9bf0;
+  color: #fff;
+  width: 100%;
+  padding: 10px;
+}
+
+.btn-primary:hover {
+  background: #1a8cd8;
+}
+
+.btn-danger {
+  background: #f4212e;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #dc1d29;
+}
+
+.status {
+  margin-top: 8px;
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.status.success {
+  color: #00ba7c;
+}
+
+.status.error {
+  color: #f4212e;
+}
+
+.divider {
+  border-top: 1px solid #2f3336;
+  margin: 16px 0;
+}
+
+h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #e7e9ea;
+}
+
+.posts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.post-card {
+  background: #16181c;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.post-card .post-text {
+  font-size: 13px;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.post-card .post-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #71767b;
+}
+
+.post-card .post-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.post-card .post-actions button {
+  background: none;
+  border: none;
+  color: #71767b;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.post-card .post-actions button:hover {
+  color: #f4212e;
+  background: rgba(244, 33, 46, 0.1);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.pending {
+  background: rgba(29, 155, 240, 0.15);
+  color: #1d9bf0;
+}
+
+.status-badge.posted {
+  background: rgba(0, 186, 124, 0.15);
+  color: #00ba7c;
+}
+
+.status-badge.missed {
+  background: rgba(244, 33, 46, 0.15);
+  color: #f4212e;
+}
+
+.hint {
+  font-size: 12px;
+  color: #71767b;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.hint code {
+  background: #2f3336;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.tones-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tone-card {
+  background: #16181c;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tone-card .tone-name {
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: capitalize;
+}
+
+.tone-card .tone-count {
+  font-size: 11px;
+  color: #71767b;
+}
+
+.empty-state {
+  text-align: center;
+  color: #71767b;
+  padding: 24px;
+  font-size: 13px;
+}

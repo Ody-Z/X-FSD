@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Growth Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>X Growth Assistant</h1>
+      <nav class="tabs">
+        <button class="tab active" data-tab="settings">Settings</button>
+        <button class="tab" data-tab="schedule">Schedule</button>
+        <button class="tab" data-tab="tones">Tones</button>
+      </nav>
+    </header>
+
+    <!-- Settings Tab -->
+    <section id="settings" class="tab-content active">
+      <div class="field">
+        <label for="username">X Username</label>
+        <input type="text" id="username" placeholder="@yourhandle">
+      </div>
+      <div class="field">
+        <label for="activeModel">Active Model</label>
+        <select id="activeModel">
+          <option value="claude-haiku">Claude Haiku 3.5</option>
+          <option value="kimi-k2.5">Kimi K2.5</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="anthropicApiKey">Anthropic API Key</label>
+        <input type="password" id="anthropicApiKey" placeholder="sk-ant-...">
+      </div>
+      <div class="field">
+        <label for="moonshotApiKey">Moonshot API Key</label>
+        <input type="password" id="moonshotApiKey" placeholder="sk-...">
+      </div>
+      <div class="field">
+        <label>Tone Files Folder</label>
+        <div class="folder-row">
+          <span id="folderPath" class="folder-path">No folder selected</span>
+          <button id="pickFolder" class="btn btn-sm">Pick Folder</button>
+        </div>
+      </div>
+      <button id="saveSettings" class="btn btn-primary">Save Settings</button>
+      <div id="settingsStatus" class="status"></div>
+    </section>
+
+    <!-- Schedule Tab -->
+    <section id="schedule" class="tab-content">
+      <div class="field">
+        <label for="postText">Post Text</label>
+        <textarea id="postText" rows="3" placeholder="What's on your mind?"></textarea>
+        <span id="charCount" class="char-count">0/280</span>
+      </div>
+      <div class="field">
+        <label for="scheduleTime">Date & Time</label>
+        <input type="datetime-local" id="scheduleTime">
+      </div>
+      <button id="addPost" class="btn btn-primary">Schedule Post</button>
+      <div id="scheduleStatus" class="status"></div>
+      <div class="divider"></div>
+      <h3>Scheduled Posts</h3>
+      <div id="postsList" class="posts-list"></div>
+    </section>
+
+    <!-- Tones Tab -->
+    <section id="tones" class="tab-content">
+      <p class="hint">Tone files are stored in your chosen folder. Each tone has a JSON file with a <code>prompt</code> you can edit and a <code>comparisons</code> array that tracks AI vs your edits (max 15).</p>
+      <div id="tonesList" class="tones-list"></div>
+      <button id="initTones" class="btn btn-primary">Initialize Tone Files</button>
+      <div id="tonesStatus" class="status"></div>
+    </section>
+  </div>
+  <script src="../utils/storage.js"></script>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

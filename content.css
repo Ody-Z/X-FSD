@@ -1,0 +1,84 @@
+.xga-tone-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.xga-tone-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  border: 1px solid #3b3f45;
+  background: transparent;
+  color: #e7e9ea;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.xga-tone-btn:hover {
+  background: rgba(29, 155, 240, 0.1);
+  border-color: #1d9bf0;
+}
+
+.xga-tone-btn.active {
+  background: rgba(29, 155, 240, 0.2);
+  border-color: #1d9bf0;
+  color: #1d9bf0;
+}
+
+.xga-tone-btn.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.xga-tone-btn .xga-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #71767b;
+  border-top-color: #1d9bf0;
+  border-radius: 50%;
+  animation: xga-spin 0.6s linear infinite;
+}
+
+@keyframes xga-spin {
+  to { transform: rotate(360deg); }
+}
+
+.xga-more-menu {
+  position: absolute;
+  background: #16181c;
+  border: 1px solid #2f3336;
+  border-radius: 12px;
+  padding: 4px 0;
+  z-index: 10000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  min-width: 140px;
+}
+
+.xga-more-item {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  color: #e7e9ea;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.xga-more-item:hover {
+  background: rgba(29, 155, 240, 0.1);
+}
