@@ -2,18 +2,17 @@
   "manifest_version": 3,
   "name": "X Growth Assistant",
   "version": "1.0.0",
-  "description": "Generate tone-matched replies and schedule posts on X",
+  "description": "Generate tone-matched replies on X",
   "permissions": [
     "storage",
-    "alarms",
-    "notifications",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
     "https://*.x.com/*",
     "https://api.anthropic.com/*",
-    "https://api.moonshot.ai/*"
+    "https://api.moonshot.ai/*",
+    "https://api.moonshot.cn/*"
   ],
   "background": {
     "service_worker": "background.js",

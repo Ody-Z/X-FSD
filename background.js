@@ -12,21 +12,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'SET_ALARM') {
-    setPostAlarm(msg.postId, msg.time);
-    sendResponse({ ok: true });
-  }
-
-  if (msg.type === 'CLEAR_ALARM') {
-    chrome.alarms.clear(`post_${msg.postId}`);
-    sendResponse({ ok: true });
-  }
-
-  if (msg.type === 'POST_PUBLISHED') {
-    handlePostPublished(msg.postId);
-    sendResponse({ ok: true });
-  }
-
   if (msg.type === 'GET_TONE_DATA') {
     getToneData(msg.tone).then(sendResponse);
     return true;
@@ -77,70 +62,3 @@ async function handleSaveComparison(tone, entry) {
   await chrome.storage.local.set({ [`tone_${tone}`]: toneData });
 }
 
-// --- Scheduling ---
-function setPostAlarm(postId, time) {
-  chrome.alarms.create(`post_${postId}`, { when: time });
-}
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (!alarm.name.startsWith('post_')) return;
-  const postId = alarm.name.replace('post_', '');
-
-  const { scheduledPosts } = await chrome.storage.local.get('scheduledPosts');
-  const posts = scheduledPosts || [];
-  const post = posts.find(p => p.id === postId);
-
-  if (!post || post.status !== 'pending') return;
-
-  await chrome.storage.local.set({ postToPublish: { id: postId, text: post.text } });
-
-  const tab = await chrome.tabs.create({
-    url: 'https://x.com/compose/post',
-    active: true
-  });
-
-  chrome.notifications.create(`posted_${postId}`, {
-    type: 'basic',
-    iconUrl: 'icons/icon128.png',
-    title: 'X Growth Assistant',
-    message: 'Publishing your scheduled post...'
-  });
-});
-
-async function handlePostPublished(postId) {
-  const { scheduledPosts } = await chrome.storage.local.get('scheduledPosts');
-  const posts = scheduledPosts || [];
-  const idx = posts.findIndex(p => p.id === postId);
-  if (idx !== -1) {
-    posts[idx].status = 'posted';
-    await chrome.storage.local.set({ scheduledPosts: posts });
-  }
-
-  chrome.notifications.create(`done_${postId}`, {
-    type: 'basic',
-    iconUrl: 'icons/icon128.png',
-    title: 'X Growth Assistant',
-    message: 'Post published successfully!'
-  });
-}
-
-// --- Re-register alarms on service worker wake ---
-chrome.runtime.onStartup.addListener(async () => {
-  const { scheduledPosts } = await chrome.storage.local.get('scheduledPosts');
-  const posts = scheduledPosts || [];
-  for (const post of posts) {
-    if (post.status === 'pending' && post.scheduledTime > Date.now()) {
-      setPostAlarm(post.id, post.scheduledTime);
-    }
-  }
-});
-
-chrome.runtime.onInstalled.addListener(async () => {
-  const { scheduledPosts } = await chrome.storage.local.get('scheduledPosts');
-  const posts = scheduledPosts || [];
-  for (const post of posts) {
-    if (post.status === 'pending' && post.scheduledTime > Date.now()) {
-      setPostAlarm(post.id, post.scheduledTime);
-    }
-  }
-});

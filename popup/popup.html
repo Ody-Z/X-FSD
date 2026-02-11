@@ -12,7 +12,6 @@
       <h1>X Growth Assistant</h1>
       <nav class="tabs">
         <button class="tab active" data-tab="settings">Settings</button>
-        <button class="tab" data-tab="schedule">Schedule</button>
         <button class="tab" data-tab="tones">Tones</button>
       </nav>
     </header>
@@ -39,6 +38,13 @@
         <input type="password" id="moonshotApiKey" placeholder="sk-...">
       </div>
       <div class="field">
+        <label for="moonshotEndpoint">Moonshot Region</label>
+        <select id="moonshotEndpoint">
+          <option value="https://api.moonshot.cn/v1">China (api.moonshot.cn)</option>
+          <option value="https://api.moonshot.ai/v1">International (api.moonshot.ai)</option>
+        </select>
+      </div>
+      <div class="field">
         <label>Tone Files Folder</label>
         <div class="folder-row">
           <span id="folderPath" class="folder-path">No folder selected</span>
@@ -47,24 +53,6 @@
       </div>
       <button id="saveSettings" class="btn btn-primary">Save Settings</button>
       <div id="settingsStatus" class="status"></div>
-    </section>
-
-    <!-- Schedule Tab -->
-    <section id="schedule" class="tab-content">
-      <div class="field">
-        <label for="postText">Post Text</label>
-        <textarea id="postText" rows="3" placeholder="What's on your mind?"></textarea>
-        <span id="charCount" class="char-count">0/280</span>
-      </div>
-      <div class="field">
-        <label for="scheduleTime">Date & Time</label>
-        <input type="datetime-local" id="scheduleTime">
-      </div>
-      <button id="addPost" class="btn btn-primary">Schedule Post</button>
-      <div id="scheduleStatus" class="status"></div>
-      <div class="divider"></div>
-      <h3>Scheduled Posts</h3>
-      <div id="postsList" class="posts-list"></div>
     </section>
 
     <!-- Tones Tab -->

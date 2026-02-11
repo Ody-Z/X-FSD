@@ -71,6 +71,7 @@ async function loadSettings() {
   document.getElementById('activeModel').value = settings.activeModel || 'claude-haiku';
   document.getElementById('anthropicApiKey').value = settings.anthropicApiKey || '';
   document.getElementById('moonshotApiKey').value = settings.moonshotApiKey || '';
+  document.getElementById('moonshotEndpoint').value = settings.moonshotEndpoint || 'https://api.moonshot.cn/v1';
 
   const handle = await getDirHandle();
   if (handle) {
@@ -85,7 +86,8 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
       username: document.getElementById('username').value.replace('@', ''),
       activeModel: document.getElementById('activeModel').value,
       anthropicApiKey: document.getElementById('anthropicApiKey').value,
-      moonshotApiKey: document.getElementById('moonshotApiKey').value
+      moonshotApiKey: document.getElementById('moonshotApiKey').value,
+      moonshotEndpoint: document.getElementById('moonshotEndpoint').value
     });
     status.textContent = 'Settings saved';
     status.className = 'status success';
@@ -107,74 +109,6 @@ document.getElementById('pickFolder').addEventListener('click', async () => {
     }
   }
 });
-
-// --- Scheduling ---
-const postText = document.getElementById('postText');
-const charCount = document.getElementById('charCount');
-
-postText.addEventListener('input', () => {
-  const len = postText.value.length;
-  charCount.textContent = `${len}/280`;
-  charCount.style.color = len > 280 ? '#f4212e' : '#71767b';
-});
-
-document.getElementById('addPost').addEventListener('click', async () => {
-  const status = document.getElementById('scheduleStatus');
-  const text = postText.value.trim();
-  const time = document.getElementById('scheduleTime').value;
-
-  if (!text) { showStatus(status, 'Post text is required', 'error'); return; }
-  if (!time) { showStatus(status, 'Schedule time is required', 'error'); return; }
-  if (text.length > 280) { showStatus(status, 'Post exceeds 280 characters', 'error'); return; }
-
-  const scheduledTime = new Date(time).getTime();
-  if (scheduledTime <= Date.now()) { showStatus(status, 'Schedule time must be in the future', 'error'); return; }
-
-  const posts = await StorageHelper.addScheduledPost({ text, scheduledTime });
-  const newPost = posts[posts.length - 1];
-
-  chrome.runtime.sendMessage({ type: 'SET_ALARM', postId: newPost.id, time: scheduledTime });
-
-  postText.value = '';
-  charCount.textContent = '0/280';
-  document.getElementById('scheduleTime').value = '';
-  showStatus(status, 'Post scheduled', 'success');
-  renderPosts();
-});
-
-async function renderPosts() {
-  const container = document.getElementById('postsList');
-  const posts = await StorageHelper.getScheduledPosts();
-  posts.sort((a, b) => a.scheduledTime - b.scheduledTime);
-
-  if (posts.length === 0) {
-    container.innerHTML = '<div class="empty-state">No scheduled posts</div>';
-    return;
-  }
-
-  container.innerHTML = posts.map(p => {
-    const date = new Date(p.scheduledTime).toLocaleString();
-    return `
-      <div class="post-card" data-id="${p.id}">
-        <div class="post-text">${escapeHtml(p.text)}</div>
-        <div class="post-meta">
-          <span><span class="status-badge ${p.status}">${p.status}</span> &middot; ${date}</span>
-          <div class="post-actions">
-            <button class="delete-post" data-id="${p.id}">Delete</button>
-          </div>
-        </div>
-      </div>`;
-  }).join('');
-
-  container.querySelectorAll('.delete-post').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      chrome.runtime.sendMessage({ type: 'CLEAR_ALARM', postId: id });
-      await StorageHelper.deleteScheduledPost(id);
-      renderPosts();
-    });
-  });
-}
 
 // --- Tones ---
 async function renderTones() {
@@ -299,19 +233,11 @@ function showStatus(el, msg, type) {
   setTimeout(() => { el.textContent = ''; }, 3000);
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // --- Tab activation on tones tab click ---
 document.querySelector('[data-tab="tones"]').addEventListener('click', () => {
   syncStorageToFiles().then(renderTones);
 });
-document.querySelector('[data-tab="schedule"]').addEventListener('click', renderPosts);
 
 // --- Init ---
 loadSettings();
-renderPosts();
 syncTonesToStorage();

@@ -1,14 +1,11 @@
 (function () {
   'use strict';
 
-  const TONES_PRIMARY = [
+  const TONES = [
     { key: 'supportive', label: 'Supportive', icon: '👍' },
     { key: 'question', label: 'Question', icon: '❓' },
     { key: 'smart', label: 'Smart', icon: '🧠' },
-    { key: 'enhance', label: 'Enhance', icon: '✨' }
-  ];
-
-  const TONES_MORE = [
+    { key: 'enhance', label: 'Enhance', icon: '✨' },
     { key: 'funny', label: 'Funny', icon: '😂' }
   ];
 
@@ -19,121 +16,240 @@
     activeComposer: null
   };
 
-  // --- Composer Detection ---
+  const LOG_PREFIX = '[XGA]';
+
+  // --- Composer Detection (multiple strategies) ---
   function findComposers() {
-    return document.querySelectorAll('[data-testid="tweetTextarea_0"]');
+    const selectors = [
+      '[data-testid="tweetTextarea_0"]',
+      '[data-testid="tweetTextarea_0_label"]',
+      'div[role="textbox"][contenteditable="true"]',
+      'div[data-contents="true"]',
+      '.DraftEditor-root',
+      '.public-DraftEditor-content'
+    ];
+
+    for (const sel of selectors) {
+      const els = document.querySelectorAll(sel);
+      if (els.length > 0) {
+        console.log(LOG_PREFIX, `Found composers via: ${sel}`, els.length);
+        return els;
+      }
+    }
+
+    const textboxes = document.querySelectorAll('[role="textbox"]');
+    if (textboxes.length > 0) {
+      console.log(LOG_PREFIX, 'Found composers via role=textbox', textboxes.length);
+      return textboxes;
+    }
+
+    return [];
   }
 
   function getComposerRoot(textarea) {
+    const buttonSelectors = [
+      '[data-testid="tweetButtonInline"]',
+      '[data-testid="tweetButton"]',
+      'button[data-testid*="tweet"]',
+      'button[data-testid*="Reply"]',
+      'button[data-testid*="reply"]'
+    ];
+
     let el = textarea;
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 25; i++) {
       if (!el.parentElement) break;
       el = el.parentElement;
-      if (el.querySelector('[data-testid="tweetButtonInline"]') ||
-          el.querySelector('[data-testid="tweetButton"]')) {
+      for (const sel of buttonSelectors) {
+        if (el.querySelector(sel)) {
+          console.log(LOG_PREFIX, 'Found composer root via button:', sel, 'at depth', i);
+          return el;
+        }
+      }
+    }
+
+    // Fallback: look for the nearest dialog/modal/layer
+    const dialog = textarea.closest('[role="dialog"]') ||
+                   textarea.closest('[aria-modal="true"]') ||
+                   textarea.closest('[data-testid="mask"]')?.parentElement;
+    if (dialog) {
+      console.log(LOG_PREFIX, 'Found composer root via dialog/modal');
+      return dialog;
+    }
+
+    // Fallback: walk up to a reasonable container
+    el = textarea;
+    for (let i = 0; i < 15; i++) {
+      if (!el.parentElement) break;
+      el = el.parentElement;
+      const groups = el.querySelectorAll('[role="group"]');
+      if (groups.length > 0) {
+        console.log(LOG_PREFIX, 'Found composer root via role=group at depth', i);
         return el;
       }
     }
-    return textarea.closest('[class]')?.parentElement?.parentElement?.parentElement?.parentElement || null;
+
+    console.log(LOG_PREFIX, 'Using fallback composer root');
+    return textarea.parentElement?.parentElement?.parentElement?.parentElement?.parentElement || null;
   }
 
   function getTweetTextAboveComposer(composerRoot) {
     if (!composerRoot) return '';
 
-    const tweetTextEl = composerRoot.querySelector('[data-testid="tweetText"]');
-    if (tweetTextEl) return tweetTextEl.innerText.trim();
+    const selectors = [
+      '[data-testid="tweetText"]',
+      'article [lang]',
+      'article div[dir="auto"]'
+    ];
 
-    let el = composerRoot;
-    for (let i = 0; i < 10; i++) {
-      el = el.parentElement;
-      if (!el) break;
-      const tweet = el.querySelector('[data-testid="tweetText"]');
-      if (tweet) return tweet.innerText.trim();
+    for (const sel of selectors) {
+      const el = composerRoot.querySelector(sel);
+      if (el && el.innerText.trim()) return el.innerText.trim();
     }
 
+    // Walk up to find tweet text
+    let el = composerRoot;
+    for (let i = 0; i < 15; i++) {
+      el = el.parentElement;
+      if (!el) break;
+      for (const sel of selectors) {
+        const tweet = el.querySelector(sel);
+        if (tweet && tweet.innerText.trim()) return tweet.innerText.trim();
+      }
+    }
+
+    // Last resort: find any tweet text on the page
     const allTweetTexts = document.querySelectorAll('[data-testid="tweetText"]');
     if (allTweetTexts.length > 0) {
-      return allTweetTexts[allTweetTexts.length - 1].innerText.trim();
+      return allTweetTexts[0].innerText.trim();
     }
     return '';
   }
 
-  function findToolbar(composerRoot) {
+  function findToolbarOrInsertionPoint(composerRoot) {
     if (!composerRoot) return null;
-    const toolbar = composerRoot.querySelector('[role="toolbar"]');
-    if (toolbar) return toolbar;
+
+    const selectors = [
+      '[role="toolbar"]',
+      '[data-testid="toolBar"]',
+      '[data-testid="Toolbar"]'
+    ];
+
+    for (const sel of selectors) {
+      const el = composerRoot.querySelector(sel);
+      if (el) {
+        console.log(LOG_PREFIX, 'Found toolbar via:', sel);
+        return el;
+      }
+    }
+
+    // Look for role="group" which X uses for the button toolbar
     const groups = composerRoot.querySelectorAll('[role="group"]');
-    return groups.length > 0 ? groups[groups.length - 1] : null;
+    if (groups.length > 0) {
+      console.log(LOG_PREFIX, 'Found toolbar via role=group, count:', groups.length);
+      return groups[groups.length - 1];
+    }
+
+    // Look for the row containing media buttons (img, gif, poll icons)
+    const svgButtons = composerRoot.querySelectorAll('button svg');
+    if (svgButtons.length >= 3) {
+      const toolbarRow = svgButtons[0].closest('div[class]');
+      if (toolbarRow) {
+        const parent = toolbarRow.parentElement;
+        if (parent && parent.children.length >= 3) {
+          console.log(LOG_PREFIX, 'Found toolbar via svg button heuristic');
+          return parent;
+        }
+      }
+    }
+
+    console.log(LOG_PREFIX, 'No toolbar found in composer root');
+    return null;
   }
 
   // --- Text Insertion ---
   function insertTextIntoComposer(textarea, text) {
-    const editableDiv = textarea.closest('[contenteditable="true"]') ||
-                        textarea.querySelector('[contenteditable="true"]') ||
-                        textarea;
+    const editable = textarea.closest('[contenteditable="true"]') ||
+                     textarea.querySelector('[contenteditable="true"]') ||
+                     (textarea.getAttribute('contenteditable') === 'true' ? textarea : null) ||
+                     textarea;
 
-    const rootEditable = editableDiv.closest('[data-testid="tweetTextarea_0"]') || editableDiv;
+    console.log(LOG_PREFIX, 'Inserting text into:', editable.tagName, editable.className?.substring(0, 50));
+    editable.focus();
 
-    rootEditable.focus();
+    // Strategy 1: use execCommand (most compatible with React)
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    selection.removeAllRanges();
+    selection.addRange(range);
 
-    const spans = rootEditable.querySelectorAll('[data-text="true"]');
-    if (spans.length > 0) {
-      spans.forEach(s => s.textContent = '');
-      spans[0].textContent = text;
-    } else {
-      const placeholder = rootEditable.querySelector('[data-offset-key]');
-      if (placeholder) {
-        let textNode = placeholder.querySelector('[data-text="true"]');
-        if (textNode) {
-          textNode.textContent = text;
-        } else {
-          placeholder.textContent = text;
-        }
-      } else {
-        rootEditable.textContent = text;
-      }
-    }
+    document.execCommand('insertText', false, text);
 
-    rootEditable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-    rootEditable.dispatchEvent(new Event('change', { bubbles: true }));
-
+    // Verify it worked
     setTimeout(() => {
-      document.execCommand('selectAll', false, null);
-      document.execCommand('insertText', false, text);
-    }, 50);
+      const current = editable.innerText?.trim();
+      if (current !== text.trim()) {
+        console.log(LOG_PREFIX, 'execCommand did not work, trying fallback');
+        // Strategy 2: direct DOM manipulation + events
+        const spans = editable.querySelectorAll('[data-text="true"]');
+        if (spans.length > 0) {
+          spans.forEach(s => s.textContent = '');
+          spans[0].textContent = text;
+        } else {
+          editable.textContent = text;
+        }
+        editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+        editable.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, 100);
   }
 
   function getComposerText(textarea) {
-    const root = textarea.closest('[data-testid="tweetTextarea_0"]') || textarea;
-    return root.innerText?.trim() || '';
+    const editable = textarea.closest('[contenteditable="true"]') ||
+                     textarea.querySelector('[contenteditable="true"]') ||
+                     (textarea.getAttribute('contenteditable') === 'true' ? textarea : null) ||
+                     textarea;
+    return editable.innerText?.trim() || '';
   }
 
   // --- UI Injection ---
   function injectToneButtons(textarea) {
+    // Skip if already injected nearby
+    const nearbyRow = textarea.closest('[role="dialog"]')?.querySelector('.xga-tone-row') ||
+                      textarea.parentElement?.parentElement?.parentElement?.querySelector('.xga-tone-row');
+    if (nearbyRow) return;
+
     const composerRoot = getComposerRoot(textarea);
-    if (!composerRoot) return;
+    if (!composerRoot) {
+      console.log(LOG_PREFIX, 'No composer root found, skipping');
+      return;
+    }
     if (composerRoot.querySelector('.xga-tone-row')) return;
 
-    const toolbar = findToolbar(composerRoot);
-    if (!toolbar) return;
+    const toolbar = findToolbarOrInsertionPoint(composerRoot);
 
     const row = document.createElement('div');
     row.className = 'xga-tone-row';
 
-    TONES_PRIMARY.forEach(tone => {
+    TONES.forEach(tone => {
       row.appendChild(createToneButton(tone, textarea, composerRoot));
     });
 
-    const moreBtn = document.createElement('button');
-    moreBtn.className = 'xga-tone-btn';
-    moreBtn.innerHTML = `<span>More</span> <span style="font-size:10px">▾</span>`;
-    moreBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleMoreMenu(moreBtn, textarea, composerRoot);
-    });
-    row.appendChild(moreBtn);
+    if (toolbar && toolbar.parentElement) {
+      toolbar.parentElement.insertBefore(row, toolbar);
+      console.log(LOG_PREFIX, 'Injected tone row before toolbar');
+    } else {
+      // Fallback: append after the textbox area
+      let insertTarget = textarea;
+      for (let i = 0; i < 5; i++) {
+        if (insertTarget.parentElement && insertTarget.parentElement !== composerRoot) {
+          insertTarget = insertTarget.parentElement;
+        }
+      }
+      insertTarget.parentElement?.appendChild(row);
+      console.log(LOG_PREFIX, 'Injected tone row via fallback append');
+    }
 
-    toolbar.parentElement.insertBefore(row, toolbar);
     state.activeComposer = textarea;
   }
 
@@ -143,7 +259,10 @@
     btn.dataset.tone = tone.key;
     btn.innerHTML = `<span>${tone.icon}</span><span>${tone.label}</span>`;
 
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
       const row = btn.closest('.xga-tone-row');
       row.querySelectorAll('.xga-tone-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active', 'loading');
@@ -151,6 +270,7 @@
 
       try {
         const tweetText = getTweetTextAboveComposer(composerRoot);
+        console.log(LOG_PREFIX, 'Generating reply for tone:', tone.key, 'tweet:', tweetText.substring(0, 50));
         state.originalPostText = tweetText;
         state.currentTone = tone.key;
 
@@ -162,10 +282,11 @@
 
         if (response.error) throw new Error(response.error);
 
+        console.log(LOG_PREFIX, 'Generated reply:', response.text.substring(0, 50));
         state.aiGeneratedText = response.text;
         insertTextIntoComposer(textarea, response.text);
       } catch (e) {
-        console.error('XGA: Generation failed:', e);
+        console.error(LOG_PREFIX, 'Generation failed:', e.message);
         state.aiGeneratedText = null;
       }
 
@@ -176,69 +297,11 @@
     return btn;
   }
 
-  async function triggerToneGeneration(tone, textarea, composerRoot) {
-    const row = composerRoot.querySelector('.xga-tone-row');
-    if (row) row.querySelectorAll('.xga-tone-btn').forEach(b => b.classList.remove('active'));
-
-    try {
-      const tweetText = getTweetTextAboveComposer(composerRoot);
-      state.originalPostText = tweetText;
-      state.currentTone = tone.key;
-      state.activeComposer = textarea;
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'GENERATE_REPLY',
-        tweetText,
-        tone: tone.key
-      });
-
-      if (response.error) throw new Error(response.error);
-
-      state.aiGeneratedText = response.text;
-      insertTextIntoComposer(textarea, response.text);
-    } catch (e) {
-      console.error('XGA: Generation failed:', e);
-      state.aiGeneratedText = null;
-    }
-  }
-
-  function toggleMoreMenu(moreBtn, textarea, composerRoot) {
-    const existing = document.querySelector('.xga-more-menu');
-    if (existing) { existing.remove(); return; }
-
-    const menu = document.createElement('div');
-    menu.className = 'xga-more-menu';
-
-    TONES_MORE.forEach(tone => {
-      const item = document.createElement('button');
-      item.className = 'xga-more-item';
-      item.textContent = `${tone.icon} ${tone.label}`;
-      item.addEventListener('click', () => {
-        menu.remove();
-        triggerToneGeneration(tone, textarea, composerRoot);
-      });
-      menu.appendChild(item);
-    });
-
-    const rect = moreBtn.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.left = `${rect.left}px`;
-    menu.style.top = `${rect.bottom + 4}px`;
-    document.body.appendChild(menu);
-
-    const closeMenu = (e) => {
-      if (!menu.contains(e.target) && e.target !== moreBtn) {
-        menu.remove();
-        document.removeEventListener('click', closeMenu);
-      }
-    };
-    setTimeout(() => document.addEventListener('click', closeMenu), 10);
-  }
 
   // --- Reply Interception for Tone Learning ---
   function interceptReplyButton() {
     document.addEventListener('click', async (e) => {
-      const btn = e.target.closest('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]');
+      const btn = e.target.closest('[data-testid="tweetButtonInline"], [data-testid="tweetButton"], button[data-testid*="tweet"], button[data-testid*="reply"]');
       if (!btn) return;
       if (!state.aiGeneratedText || !state.currentTone) return;
 
@@ -248,17 +311,17 @@
       const userFinalText = getComposerText(composer);
       if (!userFinalText) return;
 
-      const comparisonEntry = {
-        originalPost: state.originalPostText || '',
-        aiGenerated: state.aiGeneratedText,
-        userFinal: userFinalText,
-        timestamp: Date.now()
-      };
+      console.log(LOG_PREFIX, 'Capturing comparison for tone:', state.currentTone);
 
       chrome.runtime.sendMessage({
         type: 'SAVE_COMPARISON',
         tone: state.currentTone,
-        entry: comparisonEntry
+        entry: {
+          originalPost: state.originalPostText || '',
+          aiGenerated: state.aiGeneratedText,
+          userFinal: userFinalText,
+          timestamp: Date.now()
+        }
       });
 
       state.aiGeneratedText = null;
@@ -268,62 +331,36 @@
     }, true);
   }
 
-  // --- Scheduled Post Auto-Fill & Auto-Post ---
-  async function handleScheduledPost() {
-    const postData = await StorageHelper.getScheduledPostToPublish();
-    if (!postData) return;
-
-    const isComposePage = window.location.href.includes('/compose/post') ||
-                          window.location.href.includes('/compose/tweet');
-    if (!isComposePage) return;
-
-    const waitForComposer = () => new Promise((resolve) => {
-      const check = () => {
-        const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
-        if (textarea) return resolve(textarea);
-        setTimeout(check, 300);
-      };
-      check();
-    });
-
-    const textarea = await waitForComposer();
-    await new Promise(r => setTimeout(r, 500));
-
-    insertTextIntoComposer(textarea, postData.text);
-    await new Promise(r => setTimeout(r, 1000));
-
-    const postBtn = document.querySelector('[data-testid="tweetButton"]');
-    if (postBtn) {
-      postBtn.click();
-      await StorageHelper.clearScheduledPostToPublish();
-
-      chrome.runtime.sendMessage({
-        type: 'POST_PUBLISHED',
-        postId: postData.id
-      });
-    }
-  }
-
   // --- Observer ---
   function observeComposers() {
     let debounceTimer = null;
+    const scan = () => {
+      const composers = findComposers();
+      composers.forEach(textarea => injectToneButtons(textarea));
+    };
+
     const observer = new MutationObserver(() => {
       if (debounceTimer) return;
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        findComposers().forEach(textarea => injectToneButtons(textarea));
-      }, 200);
+        scan();
+      }, 300);
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
-    findComposers().forEach(textarea => injectToneButtons(textarea));
+
+    // Initial scan + delayed retry (X loads content progressively)
+    scan();
+    setTimeout(scan, 1000);
+    setTimeout(scan, 3000);
+    console.log(LOG_PREFIX, 'Observer started');
   }
 
   // --- Init ---
   function init() {
+    console.log(LOG_PREFIX, 'Content script initialized on', window.location.href);
     observeComposers();
     interceptReplyButton();
-    handleScheduledPost();
   }
 
   if (document.readyState === 'loading') {
