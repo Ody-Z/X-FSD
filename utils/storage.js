@@ -2,6 +2,7 @@ const StorageHelper = {
   DEFAULT_SETTINGS: {
     anthropicApiKey: '',
     moonshotApiKey: '',
+    geminiApiKey: '',
     activeModel: 'claude-haiku',
     username: ''
   },

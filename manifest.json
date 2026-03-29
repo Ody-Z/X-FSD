@@ -12,7 +12,8 @@
     "https://*.x.com/*",
     "https://api.anthropic.com/*",
     "https://api.moonshot.ai/*",
-    "https://api.moonshot.cn/*"
+    "https://api.moonshot.cn/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js",

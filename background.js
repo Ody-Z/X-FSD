@@ -41,6 +41,7 @@ function getDefaultSettings() {
   return {
     anthropicApiKey: '',
     moonshotApiKey: '',
+    geminiApiKey: '',
     activeModel: 'claude-haiku',
     username: ''
   };
@@ -61,4 +62,3 @@ async function handleSaveComparison(tone, entry) {
   }
   await chrome.storage.local.set({ [`tone_${tone}`]: toneData });
 }
-

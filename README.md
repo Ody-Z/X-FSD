@@ -1,12 +1,12 @@
 # X Growth Assistant
 
-Chrome extension that generates tone-matched replies on X (Twitter) using Claude or Kimi. It learns from your edits over time to match your personal writing style.
+Chrome extension that generates tone-matched replies on X (Twitter) using Claude, Kimi, or Gemini. It learns from your edits over time to match your personal writing style.
 
 ## Features
 
 - **5 reply tones**: Supportive, Question, Smart, Enhance, Funny
-- **Dual model support**: Claude Haiku 3.5 (Anthropic) and Kimi K2.5 (Moonshot)
-- **Web search**: Both models search the web for current context before replying
+- **Triple model support**: Claude Haiku 3.5 (Anthropic), Kimi K2.5 (Moonshot), and Gemini 3.1 Flash-Lite Preview (Google)
+- **Web search**: All models can search for current context before replying
 - **Style learning**: Tracks how you edit AI-generated replies and adapts over time (up to 15 comparisons per tone)
 - **Tone file sync**: Tone prompts and comparison data persist to local JSON files via the File System Access API
 
@@ -19,7 +19,7 @@ X-FSD/
 ├── content.js             # Content script — detects composers, injects tone buttons, inserts replies
 ├── content.css            # Styles for injected tone buttons
 ├── lib/
-│   └── api.js             # API layer — Claude & Kimi calls with web search
+│   └── api.js             # API layer — Claude, Kimi, and Gemini calls with web search
 ├── popup/
 │   ├── popup.html         # Extension popup UI
 │   ├── popup.js           # Popup logic — settings, tone file management, sync
@@ -37,6 +37,7 @@ X-FSD/
 1. **Get API keys**
    - Anthropic: https://console.anthropic.com
    - Moonshot: https://platform.moonshot.ai
+   - Gemini: https://aistudio.google.com/apikey
 
 2. **Load the extension**
    - Open `chrome://extensions`

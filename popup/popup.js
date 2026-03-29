@@ -71,6 +71,7 @@ async function loadSettings() {
   document.getElementById('activeModel').value = settings.activeModel || 'claude-haiku';
   document.getElementById('anthropicApiKey').value = settings.anthropicApiKey || '';
   document.getElementById('moonshotApiKey').value = settings.moonshotApiKey || '';
+  document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
   document.getElementById('moonshotEndpoint').value = settings.moonshotEndpoint || 'https://api.moonshot.cn/v1';
 
   const handle = await getDirHandle();
@@ -87,6 +88,7 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
       activeModel: document.getElementById('activeModel').value,
       anthropicApiKey: document.getElementById('anthropicApiKey').value,
       moonshotApiKey: document.getElementById('moonshotApiKey').value,
+      geminiApiKey: document.getElementById('geminiApiKey').value,
       moonshotEndpoint: document.getElementById('moonshotEndpoint').value
     });
     status.textContent = 'Settings saved';
