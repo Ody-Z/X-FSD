@@ -30,7 +30,7 @@ async function handleGenerateReply(msg) {
   const toneData = await getToneData(msg.tone);
 
   try {
-    const text = await generateReply(msg.tweetText, msg.tone, toneData, mergedSettings);
+    const text = await generateReply(msg.tweetText, msg.tone, toneData, mergedSettings, msg.context);
     return { text };
   } catch (e) {
     return { error: e.message };

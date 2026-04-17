@@ -166,6 +166,39 @@
     return null;
   }
 
+  function getThreadContext(composerRoot) {
+    const context = { threadTweets: [], posterHandle: '' };
+    if (!composerRoot) return context;
+
+    let container = composerRoot;
+    for (let i = 0; i < 20; i++) {
+      if (!container.parentElement) break;
+      container = container.parentElement;
+      if (container.querySelectorAll('article').length > 0) break;
+    }
+
+    const articles = container.querySelectorAll('article');
+    for (const article of articles) {
+      if (composerRoot.contains(article)) continue;
+      const textEl = article.querySelector('[data-testid="tweetText"]');
+      if (textEl?.innerText?.trim()) context.threadTweets.push(textEl.innerText.trim());
+    }
+
+    const lastArticle = articles.length > 0 ? articles[articles.length - 1] : null;
+    if (lastArticle && !composerRoot.contains(lastArticle)) {
+      const userNameEl = lastArticle.querySelector('[data-testid="User-Name"]');
+      if (userNameEl) {
+        const handleLink = userNameEl.querySelector('a[href^="/"]');
+        if (handleLink) {
+          const href = handleLink.getAttribute('href');
+          context.posterHandle = '@' + href.replace(/^\//, '').split('/')[0];
+        }
+      }
+    }
+
+    return context;
+  }
+
   // --- Text Insertion ---
   function insertTextIntoComposer(textarea, text) {
     const editable = textarea.closest('[contenteditable="true"]') ||
@@ -270,14 +303,16 @@
 
       try {
         const tweetText = getTweetTextAboveComposer(composerRoot);
-        console.log(LOG_PREFIX, 'Generating reply for tone:', tone.key, 'tweet:', tweetText.substring(0, 50));
+        const context = getThreadContext(composerRoot);
+        console.log(LOG_PREFIX, 'Generating reply for tone:', tone.key, 'tweet:', tweetText.substring(0, 50), 'thread:', context.threadTweets.length);
         state.originalPostText = tweetText;
         state.currentTone = tone.key;
 
         const response = await chrome.runtime.sendMessage({
           type: 'GENERATE_REPLY',
           tweetText,
-          tone: tone.key
+          tone: tone.key,
+          context
         });
 
         if (response.error) throw new Error(response.error);
