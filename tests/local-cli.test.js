@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { callLocalGeminiCliBridge } from '../lib/local-cli.js';
+import { callLocalGeminiCliBridge, reportLocalBridgeTrace } from '../lib/local-cli.js';
 
 describe('callLocalGeminiCliBridge', () => {
   let originalFetch;
@@ -62,5 +62,40 @@ describe('callLocalGeminiCliBridge', () => {
       () => callLocalGeminiCliBridge({ systemPrompt: 'system', tweetText: 'tweet' }),
       /Start it with `npm run bridge`/
     );
+  });
+
+  it('posts trace events to the local bridge', async () => {
+    let request;
+    globalThis.fetch = async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ ok: true }) };
+    };
+
+    await reportLocalBridgeTrace({
+      requestId: 'xga-test',
+      message: 'Loaded settings in 2ms',
+      extra: { activeModel: 'gemini-cli-local' },
+      source: 'bg'
+    });
+
+    assert.equal(request.url, 'http://127.0.0.1:43117/trace');
+    assert.equal(request.options.method, 'POST');
+    assert.deepEqual(JSON.parse(request.options.body), {
+      requestId: 'xga-test',
+      message: 'Loaded settings in 2ms',
+      extra: { activeModel: 'gemini-cli-local' },
+      source: 'bg'
+    });
+  });
+
+  it('swallows trace logging failures', async () => {
+    globalThis.fetch = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+
+    await assert.doesNotReject(() => reportLocalBridgeTrace({
+      requestId: 'xga-test',
+      message: 'trace'
+    }));
   });
 });

@@ -1,5 +1,5 @@
 import { buildReplyPrompt, GEMINI_CLI_LOCAL_MODEL, GEMINI_CLI_MODEL, generateReply, TONE_DEFAULTS } from './lib/api.js';
-import { callLocalGeminiCliBridge } from './lib/local-cli.js';
+import { callLocalGeminiCliBridge, reportLocalBridgeTrace } from './lib/local-cli.js';
 
 function nowMs() {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -12,6 +12,7 @@ function formatDuration(ms) {
 }
 
 function logRequest(requestId, message, extra) {
+  void reportLocalBridgeTrace({ requestId, message, extra, source: 'bg' });
   if (typeof extra === 'undefined') {
     console.log(`[XGA][bg][${requestId}] ${message}`);
     return;

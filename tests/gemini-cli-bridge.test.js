@@ -153,4 +153,24 @@ describe('createBridgeServer', () => {
       assert.equal(data.code, 'gemini_auth_required');
     });
   });
+
+  it('accepts external trace events', async () => {
+    const server = createBridgeServer();
+
+    await withServer(server, async (origin) => {
+      const res = await fetch(`${origin}/trace`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'xga-trace',
+          source: 'bg',
+          message: 'Loaded settings in 1ms',
+          extra: { activeModel: 'gemini-cli-local' }
+        })
+      });
+      const data = await res.json();
+      assert.equal(res.status, 202);
+      assert.equal(data.ok, true);
+    });
+  });
 });

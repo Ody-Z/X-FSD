@@ -2,7 +2,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { GEMINI_CLI_MODEL, buildUserMessage } from '../lib/api.js';
@@ -13,6 +13,7 @@ const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
 const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '45000');
 const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
 const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
+const TRACE_LOG_PATH = process.env.XGA_GEMINI_TRACE_LOG || '/tmp/xga-gemini-bridge.log';
 const GEMINI_CONFIG_DIRNAME = '.gemini';
 const GEMINI_AUTH_FILES = ['google_accounts.json', 'installation_id', 'oauth_creds.json', 'state.json'];
 
@@ -25,12 +26,21 @@ function formatDurationNs(startedAtNs) {
   return `${Math.round(elapsedMs)}ms`;
 }
 
-function logRequest(requestId, message, extra) {
+function appendTraceLog(entry) {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    ...entry
+  });
+  return appendFile(TRACE_LOG_PATH, `${line}\n`, 'utf8').catch(() => {});
+}
+
+function logRequest(requestId, message, extra, source = 'bridge') {
+  void appendTraceLog({ source, requestId, message, extra });
   if (typeof extra === 'undefined') {
-    console.log(`[XGA][bridge][${requestId}] ${message}`);
+    console.log(`[XGA][${source}][${requestId}] ${message}`);
     return;
   }
-  console.log(`[XGA][bridge][${requestId}] ${message}`, extra);
+  console.log(`[XGA][${source}][${requestId}] ${message}`, extra);
 }
 
 class BridgeError extends Error {
@@ -336,6 +346,23 @@ function createBridgeServer({
         return;
       }
 
+      if (req.method === 'POST' && req.url === '/trace') {
+        const body = await readJsonBody(req);
+        const requestId = typeof body.requestId === 'string' && body.requestId.trim()
+          ? body.requestId
+          : `trace-${Date.now().toString(36)}`;
+        const message = typeof body.message === 'string' && body.message.trim()
+          ? body.message
+          : 'trace';
+        const source = typeof body.source === 'string' && body.source.trim()
+          ? body.source
+          : 'client';
+
+        logRequest(requestId, message, body.extra, source);
+        sendJson(res, 202, { ok: true });
+        return;
+      }
+
       if (req.method === 'POST' && req.url === '/generate-reply') {
         const requestStartedAt = nowNs();
         const body = await readJsonBody(req);
@@ -379,8 +406,14 @@ function createBridgeServer({
 }
 
 async function startBridgeServer() {
+  await writeFile(TRACE_LOG_PATH, '', 'utf8');
   const server = createBridgeServer();
   await new Promise((resolve) => server.listen(DEFAULT_PORT, '127.0.0.1', resolve));
+  logRequest('system', 'Bridge started', {
+    port: DEFAULT_PORT,
+    model: DEFAULT_MODEL,
+    traceLogPath: TRACE_LOG_PATH
+  });
   console.log(`Gemini CLI bridge listening on http://127.0.0.1:${DEFAULT_PORT}`);
   return server;
 }
@@ -399,6 +432,8 @@ export {
   DEFAULT_MODEL,
   DEFAULT_PORT,
   DEFAULT_TIMEOUT_MS,
+  TRACE_LOG_PATH,
+  appendTraceLog,
   buildCliPrompt,
   buildMinimalSettings,
   createBridgeServer,
