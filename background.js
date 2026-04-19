@@ -1,4 +1,5 @@
-import { generateReply, TONE_DEFAULTS } from './lib/api.js';
+import { buildReplyPrompt, GEMINI_CLI_LOCAL_MODEL, GEMINI_MODEL, generateReply, TONE_DEFAULTS } from './lib/api.js';
+import { callLocalGeminiCliBridge } from './lib/local-cli.js';
 
 // --- Message Handler ---
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -30,6 +31,17 @@ async function handleGenerateReply(msg) {
   const toneData = await getToneData(msg.tone);
 
   try {
+    if (mergedSettings.activeModel === GEMINI_CLI_LOCAL_MODEL) {
+      const { systemPrompt } = buildReplyPrompt(msg.tweetText, msg.tone, toneData, msg.context);
+      const text = await callLocalGeminiCliBridge({
+        systemPrompt,
+        tweetText: msg.tweetText,
+        context: msg.context,
+        model: GEMINI_MODEL
+      });
+      return { text };
+    }
+
     const text = await generateReply(msg.tweetText, msg.tone, toneData, mergedSettings, msg.context);
     return { text };
   } catch (e) {

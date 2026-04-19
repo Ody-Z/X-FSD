@@ -1,4 +1,4 @@
-import { TONE_DEFAULTS } from '../lib/api.js';
+import { GEMINI_CLI_LOCAL_MODEL, TONE_DEFAULTS } from '../lib/api.js';
 
 const DB_NAME = 'xGrowthFS';
 const STORE_NAME = 'dirHandles';
@@ -73,12 +73,44 @@ async function loadSettings() {
   document.getElementById('moonshotApiKey').value = settings.moonshotApiKey || '';
   document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
   document.getElementById('moonshotEndpoint').value = settings.moonshotEndpoint || 'https://api.moonshot.cn/v1';
+  updateModelHintAndFields(settings.activeModel || 'claude-haiku');
 
   const handle = await getDirHandle();
   if (handle) {
     document.getElementById('folderPath').textContent = handle.name;
   }
 }
+
+function updateModelHintAndFields(activeModel) {
+  const hint = document.getElementById('modelHint');
+  const geminiApiKey = document.getElementById('geminiApiKey');
+
+  if (activeModel === GEMINI_CLI_LOCAL_MODEL) {
+    hint.textContent = 'Gemini CLI Local uses your local bridge. Start it first with `npm run bridge`. Gemini API Key is ignored in this mode.';
+    geminiApiKey.disabled = true;
+    geminiApiKey.placeholder = 'Not used in Gemini CLI Local mode';
+    return;
+  }
+
+  geminiApiKey.disabled = false;
+  geminiApiKey.placeholder = 'AIza...';
+
+  if (activeModel === 'gemini-3.1-flash-lite-preview') {
+    hint.textContent = 'Gemini HTTP mode uses your Gemini API Key.';
+    return;
+  }
+
+  if (activeModel === 'kimi-k2.5') {
+    hint.textContent = 'Kimi mode uses your Moonshot API key and selected region.';
+    return;
+  }
+
+  hint.textContent = 'Claude mode uses your Anthropic API key.';
+}
+
+document.getElementById('activeModel').addEventListener('change', (event) => {
+  updateModelHintAndFields(event.target.value);
+});
 
 document.getElementById('saveSettings').addEventListener('click', async () => {
   const status = document.getElementById('settingsStatus');

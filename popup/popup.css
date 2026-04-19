@@ -278,6 +278,11 @@ h3 {
   line-height: 1.5;
 }
 
+#modelHint {
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+
 .hint code {
   background: #2f3336;
   padding: 1px 5px;
