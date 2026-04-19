@@ -84,6 +84,15 @@ async function loadSettings() {
 function updateModelHintAndFields(activeModel) {
   const hint = document.getElementById('modelHint');
   const geminiApiKey = document.getElementById('geminiApiKey');
+  const anthropicField = document.getElementById('anthropicApiKeyField');
+  const moonshotKeyField = document.getElementById('moonshotApiKeyField');
+  const geminiKeyField = document.getElementById('geminiApiKeyField');
+  const moonshotEndpointField = document.getElementById('moonshotEndpointField');
+
+  anthropicField.classList.toggle('hidden', activeModel !== 'claude-haiku');
+  moonshotKeyField.classList.toggle('hidden', activeModel !== 'kimi-k2.5');
+  moonshotEndpointField.classList.toggle('hidden', activeModel !== 'kimi-k2.5');
+  geminiKeyField.classList.toggle('hidden', activeModel === GEMINI_CLI_LOCAL_MODEL || activeModel !== 'gemini-3.1-flash-lite-preview');
 
   if (activeModel === GEMINI_CLI_LOCAL_MODEL) {
     hint.textContent = 'Gemini CLI Local uses your local bridge. Start it first with `npm run bridge`. Gemini API Key is ignored in this mode.';
@@ -108,8 +117,25 @@ function updateModelHintAndFields(activeModel) {
   hint.textContent = 'Claude mode uses your Anthropic API key.';
 }
 
-document.getElementById('activeModel').addEventListener('change', (event) => {
-  updateModelHintAndFields(event.target.value);
+async function saveActiveModelSelection(activeModel) {
+  await StorageHelper.saveSettings({ activeModel });
+}
+
+document.getElementById('activeModel').addEventListener('change', async (event) => {
+  const status = document.getElementById('settingsStatus');
+  const activeModel = event.target.value;
+  updateModelHintAndFields(activeModel);
+
+  try {
+    await saveActiveModelSelection(activeModel);
+    status.textContent = 'Model updated';
+    status.className = 'status success';
+  } catch (e) {
+    status.textContent = e.message;
+    status.className = 'status error';
+  }
+
+  setTimeout(() => { status.textContent = ''; }, 2000);
 });
 
 document.getElementById('saveSettings').addEventListener('click', async () => {

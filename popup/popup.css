@@ -67,6 +67,10 @@ header h1 {
   position: relative;
 }
 
+.field.hidden {
+  display: none;
+}
+
 .field label {
   display: block;
   font-size: 12px;

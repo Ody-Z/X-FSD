@@ -182,6 +182,13 @@ describe('generateReply', () => {
     );
   });
 
+  it('throws on unsupported active model instead of falling back to Claude', async () => {
+    await assert.rejects(
+      () => generateReply('test', 'smart', null, { activeModel: 'gemini-cli-local' }),
+      { message: 'Unsupported active model: gemini-cli-local' }
+    );
+  });
+
   it('throws on API error response', async () => {
     globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => 'Unauthorized' });
     await assert.rejects(
