@@ -1,16 +1,37 @@
 import http from 'node:http';
 import os from 'node:os';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { GEMINI_MODEL, buildUserMessage } from '../lib/api.js';
+import { GEMINI_CLI_MODEL, buildUserMessage } from '../lib/api.js';
 
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
 const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '45000');
-const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_MODEL;
+const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
 const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
+const GEMINI_CONFIG_DIRNAME = '.gemini';
+const GEMINI_AUTH_FILES = ['google_accounts.json', 'installation_id', 'oauth_creds.json', 'state.json'];
+
+function nowNs() {
+  return process.hrtime.bigint();
+}
+
+function formatDurationNs(startedAtNs) {
+  const elapsedMs = Number(process.hrtime.bigint() - startedAtNs) / 1e6;
+  return `${Math.round(elapsedMs)}ms`;
+}
+
+function logRequest(requestId, message, extra) {
+  if (typeof extra === 'undefined') {
+    console.log(`[XGA][bridge][${requestId}] ${message}`);
+    return;
+  }
+  console.log(`[XGA][bridge][${requestId}] ${message}`, extra);
+}
 
 class BridgeError extends Error {
   constructor(code, message, status = 500) {
@@ -139,6 +160,55 @@ function mapCliExecutionError(error, stdout = '', stderr = '') {
   );
 }
 
+function buildMinimalSettings(sourceSettings = {}) {
+  return {
+    general: {
+      previewFeatures: sourceSettings?.general?.previewFeatures === true
+    },
+    security: {
+      auth: {
+        selectedType: sourceSettings?.security?.auth?.selectedType || 'oauth-personal'
+      }
+    }
+  };
+}
+
+async function ensureIsolatedGeminiHome(rootDir) {
+  const startedAt = nowNs();
+  const sourceConfigDir = path.join(os.homedir(), GEMINI_CONFIG_DIRNAME);
+  const targetConfigDir = path.join(rootDir, GEMINI_CONFIG_DIRNAME);
+  await mkdir(targetConfigDir, { recursive: true });
+
+  for (const fileName of GEMINI_AUTH_FILES) {
+    const sourcePath = path.join(sourceConfigDir, fileName);
+    const targetPath = path.join(targetConfigDir, fileName);
+
+    try {
+      await copyFile(sourcePath, targetPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+
+  let sourceSettings = {};
+  try {
+    sourceSettings = JSON.parse(await readFile(path.join(sourceConfigDir, 'settings.json'), 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  await writeFile(
+    path.join(targetConfigDir, 'settings.json'),
+    `${JSON.stringify(buildMinimalSettings(sourceSettings), null, 2)}\n`,
+    'utf8'
+  );
+
+  logRequest('setup', `Prepared isolated Gemini home in ${formatDurationNs(startedAt)}`, {
+    targetConfigDir
+  });
+  return rootDir;
+}
+
 async function getGeminiStatus({ geminiBin = DEFAULT_GEMINI_BIN } = {}) {
   try {
     const { stdout } = await execFileAsync(geminiBin, ['--version'], {
@@ -171,13 +241,24 @@ async function invokeGeminiCli({
   systemPrompt,
   tweetText,
   context,
+  requestId = `bridge-${Date.now().toString(36)}`,
   model = DEFAULT_MODEL,
   geminiBin = DEFAULT_GEMINI_BIN,
   timeoutMs = DEFAULT_TIMEOUT_MS
 }) {
+  const startedAt = nowNs();
   const prompt = buildCliPrompt(systemPrompt, tweetText, context);
+  logRequest(requestId, 'Prepared CLI prompt', {
+    model,
+    promptLength: prompt.length
+  });
+
+  const isolateStartedAt = nowNs();
+  const isolatedHome = await ensureIsolatedGeminiHome(path.join(os.tmpdir(), 'xga-gemini-cli-home'));
+  logRequest(requestId, `Isolated Gemini home ready in ${formatDurationNs(isolateStartedAt)}`);
 
   try {
+    const execStartedAt = nowNs();
     const { stdout } = await execFileAsync(geminiBin, [
       '--model',
       model,
@@ -186,13 +267,28 @@ async function invokeGeminiCli({
       '--output-format',
       'json'
     ], {
-      cwd: os.homedir(),
+      cwd: isolatedHome,
+      env: {
+        ...process.env,
+        HOME: isolatedHome
+      },
       timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024
     });
+    logRequest(requestId, `Gemini CLI process finished in ${formatDurationNs(execStartedAt)}`);
 
-    return parseCliJsonOutput(stdout);
+    const parseStartedAt = nowNs();
+    const text = parseCliJsonOutput(stdout);
+    logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
+      responseLength: text.length
+    });
+    logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`);
+    return text;
   } catch (error) {
+    logRequest(requestId, `Gemini CLI failed after ${formatDurationNs(startedAt)}`, {
+      code: error?.code,
+      message: error?.message
+    });
     throw mapCliExecutionError(error, error.stdout || '', error.stderr || '');
   }
 }
@@ -241,7 +337,15 @@ function createBridgeServer({
       }
 
       if (req.method === 'POST' && req.url === '/generate-reply') {
+        const requestStartedAt = nowNs();
         const body = await readJsonBody(req);
+        const requestId = typeof body.requestId === 'string' && body.requestId.trim()
+          ? body.requestId
+          : `bridge-${Date.now().toString(36)}`;
+        logRequest(requestId, 'HTTP request received', {
+          tweetLength: body.tweetText?.length || 0,
+          threadCount: body.context?.threadTweets?.length || 0
+        });
         if (typeof body.systemPrompt !== 'string' || !body.systemPrompt.trim()) {
           throw new BridgeError('missing_system_prompt', 'systemPrompt is required', 400);
         }
@@ -253,9 +357,11 @@ function createBridgeServer({
           systemPrompt: body.systemPrompt,
           tweetText: body.tweetText,
           context: body.context,
+          requestId,
           model: typeof body.model === 'string' && body.model.trim() ? body.model : DEFAULT_MODEL
         });
 
+        logRequest(requestId, `HTTP response sent in ${formatDurationNs(requestStartedAt)}`);
         sendJson(res, 200, { text });
         return;
       }
@@ -294,7 +400,9 @@ export {
   DEFAULT_PORT,
   DEFAULT_TIMEOUT_MS,
   buildCliPrompt,
+  buildMinimalSettings,
   createBridgeServer,
+  ensureIsolatedGeminiHome,
   extractFirstJsonObject,
   getGeminiStatus,
   invokeGeminiCli,

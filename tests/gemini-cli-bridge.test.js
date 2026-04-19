@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { BridgeError, buildCliPrompt, createBridgeServer, extractFirstJsonObject, parseCliJsonOutput } from '../bridge/gemini-cli-bridge.js';
+import { BridgeError, buildCliPrompt, buildMinimalSettings, createBridgeServer, extractFirstJsonObject, parseCliJsonOutput } from '../bridge/gemini-cli-bridge.js';
 
 async function withServer(server, fn) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -70,6 +70,21 @@ describe('buildCliPrompt', () => {
     assert.ok(prompt.includes('by @someone'));
     assert.ok(prompt.includes('first tweet'));
     assert.ok(prompt.includes('third tweet'));
+  });
+});
+
+describe('buildMinimalSettings', () => {
+  it('keeps auth selection but strips hooks', () => {
+    const settings = buildMinimalSettings({
+      general: { previewFeatures: true },
+      hooks: { SessionStart: [{ hooks: [{ command: 'slow-hook' }] }] },
+      security: { auth: { selectedType: 'oauth-personal' } }
+    });
+
+    assert.deepEqual(settings, {
+      general: { previewFeatures: true },
+      security: { auth: { selectedType: 'oauth-personal' } }
+    });
   });
 });
 

@@ -100,3 +100,10 @@
 .xga-more-item:hover {
   background: rgba(29, 155, 240, 0.1);
 }
+
+.xga-inline-status {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #f4212e;
+}

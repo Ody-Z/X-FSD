@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemPrompt, generateReply, TONE_DEFAULTS } from '../lib/api.js';
+import { buildSystemPrompt, buildUserMessage, generateReply, TONE_DEFAULTS } from '../lib/api.js';
 
 // --- buildSystemPrompt ---
 
@@ -41,21 +41,54 @@ describe('buildSystemPrompt', () => {
     assert.ok(!result.includes('Learn from the differences'));
   });
 
-  it('only uses last 10 comparisons', () => {
+  it('only uses last 4 comparisons', () => {
     const comparisons = Array.from({ length: 15 }, (_, i) => ({
       originalPost: `orig${i}`, aiGenerated: `ai${i}`, userFinal: `user${i}`
     }));
     const result = buildSystemPrompt('smart', { prompt: 'test', comparisons });
-    assert.ok(!result.includes('orig0'));
-    assert.ok(!result.includes('orig4'));
-    assert.ok(result.includes('orig5'));
+    assert.ok(!result.includes('orig10'));
+    assert.ok(result.includes('orig11'));
     assert.ok(result.includes('orig14'));
+  });
+
+  it('truncates long comparison examples', () => {
+    const longText = 'x'.repeat(400);
+    const result = buildSystemPrompt('smart', {
+      prompt: 'test',
+      comparisons: [{ originalPost: longText, aiGenerated: longText, userFinal: longText }]
+    });
+    assert.ok(result.includes('...'));
+    assert.ok(!result.includes('x'.repeat(260)));
   });
 });
 
-// --- buildUserMessage (tested via generateReply internals, but we can import it) ---
-// buildUserMessage is not exported, so we test it indirectly through generateReply
-// and directly by re-implementing the import trick
+describe('buildUserMessage', () => {
+  it('limits thread context to the latest 3 earlier tweets', () => {
+    const message = buildUserMessage('tweet5', {
+      posterHandle: '@someone',
+      threadTweets: ['tweet1', 'tweet2', 'tweet3', 'tweet4', 'tweet5']
+    });
+
+    assert.ok(!message.includes('tweet1'));
+    assert.ok(message.includes('tweet2'));
+    assert.ok(message.includes('tweet4'));
+    assert.ok(message.includes('tweet3'));
+    assert.ok(message.includes('tweet5'));
+  });
+
+  it('truncates long thread and post text', () => {
+    const longThread = 't'.repeat(500);
+    const longPost = 'p'.repeat(700);
+    const message = buildUserMessage(longPost, {
+      posterHandle: '@someone',
+      threadTweets: [longThread, longPost]
+    });
+
+    assert.ok(message.includes('...'));
+    assert.ok(!message.includes('t'.repeat(350)));
+    assert.ok(!message.includes('p'.repeat(600)));
+  });
+});
 
 // We can test the user message format by intercepting what callClaude receives
 describe('generateReply', () => {

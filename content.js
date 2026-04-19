@@ -18,6 +18,42 @@
 
   const LOG_PREFIX = '[XGA]';
 
+  function nowMs() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  function formatDuration(ms) {
+    return `${Math.round(ms)}ms`;
+  }
+
+  function createRequestId() {
+    return `xga-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function formatGenerationError(error) {
+    const message = error?.message || String(error || 'Unknown error');
+    if (/Extension context invalidated/i.test(message)) {
+      return 'Extension was reloaded. Refresh this X tab, then try again.';
+    }
+    return message;
+  }
+
+  function showInlineStatus(row, message) {
+    if (!row) return;
+
+    const existing = row.parentElement?.querySelector('.xga-inline-status');
+    if (existing) existing.remove();
+
+    const status = document.createElement('div');
+    status.className = 'xga-inline-status';
+    status.textContent = message;
+    row.insertAdjacentElement('afterend', status);
+
+    setTimeout(() => status.remove(), 5000);
+  }
+
   // --- Composer Detection (multiple strategies) ---
   function findComposers() {
     const selectors = [
@@ -302,9 +338,15 @@
       btn.innerHTML = `<span class="xga-spinner"></span><span>${tone.label}</span>`;
 
       try {
+        const requestId = createRequestId();
+        const startedAt = nowMs();
         const tweetText = getTweetTextAboveComposer(composerRoot);
         const context = getThreadContext(composerRoot);
-        console.log(LOG_PREFIX, 'Generating reply for tone:', tone.key, 'tweet:', tweetText.substring(0, 50), 'thread:', context.threadTweets.length);
+        console.log(LOG_PREFIX, `[${requestId}] Generate start`, {
+          tone: tone.key,
+          tweetPreview: tweetText.substring(0, 50),
+          threadCount: context.threadTweets.length
+        });
         state.originalPostText = tweetText;
         state.currentTone = tone.key;
 
@@ -312,16 +354,21 @@
           type: 'GENERATE_REPLY',
           tweetText,
           tone: tone.key,
-          context
+          context,
+          requestId
         });
 
         if (response.error) throw new Error(response.error);
 
-        console.log(LOG_PREFIX, 'Generated reply:', response.text.substring(0, 50));
+        console.log(LOG_PREFIX, `[${requestId}] Generate success in ${formatDuration(nowMs() - startedAt)}`, {
+          replyPreview: response.text.substring(0, 80)
+        });
         state.aiGeneratedText = response.text;
         insertTextIntoComposer(textarea, response.text);
       } catch (e) {
-        console.error(LOG_PREFIX, 'Generation failed:', e.message);
+        const errorMessage = formatGenerationError(e);
+        console.error(LOG_PREFIX, 'Generation failed:', errorMessage);
+        showInlineStatus(row, errorMessage);
         state.aiGeneratedText = null;
       }
 
