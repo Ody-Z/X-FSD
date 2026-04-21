@@ -27,7 +27,8 @@
     overlayRoot: null,
     drawerRoot: null,
     queueBusy: false,
-    refreshScheduled: false
+    refreshScheduled: false,
+    interactionLockedUntil: 0
   };
 
   function createRequestId() {
@@ -112,6 +113,15 @@
     if (!state.overlayRoot) {
       const overlay = document.createElement('div');
       overlay.className = 'xga-overlay-root';
+      overlay.addEventListener('pointerdown', () => {
+        state.interactionLockedUntil = Date.now() + 1500;
+      }, true);
+      overlay.addEventListener('focusin', () => {
+        state.interactionLockedUntil = Date.now() + 5000;
+      }, true);
+      overlay.addEventListener('input', () => {
+        state.interactionLockedUntil = Date.now() + 5000;
+      }, true);
       document.body.appendChild(overlay);
       state.overlayRoot = overlay;
     }
@@ -119,9 +129,35 @@
     if (!state.drawerRoot) {
       const drawer = document.createElement('div');
       drawer.className = 'xga-drawer-root';
+      drawer.addEventListener('pointerdown', () => {
+        state.interactionLockedUntil = Date.now() + 1500;
+      }, true);
+      drawer.addEventListener('focusin', () => {
+        state.interactionLockedUntil = Date.now() + 5000;
+      }, true);
+      drawer.addEventListener('input', () => {
+        state.interactionLockedUntil = Date.now() + 5000;
+      }, true);
       document.body.appendChild(drawer);
       state.drawerRoot = drawer;
     }
+  }
+
+  function isExtensionUiNode(node) {
+    if (!(node instanceof Node)) return false;
+    return Boolean(
+      (state.overlayRoot && (node === state.overlayRoot || state.overlayRoot.contains(node))) ||
+      (state.drawerRoot && (node === state.drawerRoot || state.drawerRoot.contains(node)))
+    );
+  }
+
+  function shouldIgnoreMutations(mutations) {
+    return mutations.every((mutation) => isExtensionUiNode(mutation.target));
+  }
+
+  function isUserInteractingWithCard() {
+    const active = document.activeElement;
+    return Date.now() < state.interactionLockedUntil || Boolean(active && active.closest('.xga-card'));
   }
 
   function createDraftRecord(item) {
@@ -397,10 +433,11 @@
       const card = buildCard(record, false);
       const desiredTop = Math.max(24, item.rect.top);
       const top = Math.max(desiredTop, previousBottom + 12);
-      previousBottom = top + 220;
       const left = Math.min(window.innerWidth - CARD_WIDTH - 20, item.rect.right + 20);
-      card.style.transform = `translate(${left}px, ${top}px)`;
+      card.style.left = `${left}px`;
+      card.style.top = `${top}px`;
       state.overlayRoot.appendChild(card);
+      previousBottom = top + card.offsetHeight;
     }
   }
 
@@ -680,7 +717,9 @@
     const items = collectCandidateArticles();
     syncDraftsWithFeed(items);
     computePriority(items);
-    render(items);
+    if (!isUserInteractingWithCard()) {
+      render(items);
+    }
     processQueue();
   }
 
@@ -694,7 +733,8 @@
   }
 
   function observeFeed() {
-    const observer = new MutationObserver(() => {
+    const observer = new MutationObserver((mutations) => {
+      if (shouldIgnoreMutations(mutations)) return;
       scheduleRefresh();
     });
 

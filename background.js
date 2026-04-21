@@ -116,7 +116,7 @@ async function getAdaptiveToneDataMap() {
 }
 
 function resolvePhaseTimeout(phase) {
-  return phase === DRAFT_PHASE_FULL ? 35000 : 18000;
+  return phase === DRAFT_PHASE_FULL ? 60000 : 60000;
 }
 
 async function generateWithGeminiLocal({
@@ -239,7 +239,7 @@ async function handleGenerateToneDraft(msg, requestId) {
     status: 'ready',
     strategyType,
     baseTone: msg.tone === 'enhance' ? (msg.baseToneHint || baseTone || getBaseToneForStrategy(strategyType)) : baseTone,
-    text: text.trim(),
+    text: typeof text === 'string' ? text.trim() : '',
     reason: ''
   };
 }
