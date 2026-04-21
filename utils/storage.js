@@ -3,8 +3,9 @@ const StorageHelper = {
     anthropicApiKey: '',
     moonshotApiKey: '',
     geminiApiKey: '',
-    activeModel: 'claude-haiku',
-    username: ''
+    activeModel: 'gemini-cli-local',
+    username: '',
+    autoDraftsEnabled: true
   },
 
   async getSettings() {

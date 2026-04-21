@@ -2,31 +2,33 @@
   'use strict';
 
   const TONES = [
-    { key: 'supportive', label: 'Supportive', icon: '👍' },
-    { key: 'question', label: 'Question', icon: '❓' },
-    { key: 'smart', label: 'Smart', icon: '🧠' },
-    { key: 'enhance', label: 'Enhance', icon: '✨' },
-    { key: 'funny', label: 'Funny', icon: '😂' }
+    { key: 'supportive', label: 'Supportive' },
+    { key: 'question', label: 'Question' },
+    { key: 'smart', label: 'Smart' },
+    { key: 'funny', label: 'Funny' },
+    { key: 'enhance', label: 'Enhance' }
   ];
-
-  const state = {
-    currentTone: null,
-    aiGeneratedText: null,
-    originalPostText: null,
-    activeComposer: null
+  const STRATEGY_LABELS = {
+    humor: 'Humor',
+    deep_share: 'Deep Share',
+    hot_take: 'Hot Take',
+    news: 'News',
+    personal: 'Personal'
   };
-
+  const CARD_WIDTH = 320;
+  const LOOKAHEAD_COUNT = 6;
+  const MAX_TRACKED_POSTS = 48;
   const LOG_PREFIX = '[XGA]';
 
-  function nowMs() {
-    return typeof performance !== 'undefined' && typeof performance.now === 'function'
-      ? performance.now()
-      : Date.now();
-  }
-
-  function formatDuration(ms) {
-    return `${Math.round(ms)}ms`;
-  }
+  const state = {
+    drafts: new Map(),
+    visibleIds: [],
+    priorityIds: [],
+    overlayRoot: null,
+    drawerRoot: null,
+    queueBusy: false,
+    refreshScheduled: false
+  };
 
   function createRequestId() {
     return `xga-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -40,409 +42,676 @@
     return message;
   }
 
-  function showInlineStatus(row, message) {
-    if (!row) return;
-
-    const existing = row.parentElement?.querySelector('.xga-inline-status');
-    if (existing) existing.remove();
-
-    const status = document.createElement('div');
-    status.className = 'xga-inline-status';
-    status.textContent = message;
-    row.insertAdjacentElement('afterend', status);
-
-    setTimeout(() => status.remove(), 5000);
+  function normalizeWhitespace(text) {
+    return typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : '';
   }
 
-  // --- Composer Detection (multiple strategies) ---
-  function findComposers() {
-    const selectors = [
-      '[data-testid="tweetTextarea_0"]',
-      '[data-testid="tweetTextarea_0_label"]',
-      'div[role="textbox"][contenteditable="true"]',
-      'div[data-contents="true"]',
-      '.DraftEditor-root',
-      '.public-DraftEditor-content'
-    ];
-
-    for (const sel of selectors) {
-      const els = document.querySelectorAll(sel);
-      if (els.length > 0) {
-        console.log(LOG_PREFIX, `Found composers via: ${sel}`, els.length);
-        return els;
-      }
-    }
-
-    const textboxes = document.querySelectorAll('[role="textbox"]');
-    if (textboxes.length > 0) {
-      console.log(LOG_PREFIX, 'Found composers via role=textbox', textboxes.length);
-      return textboxes;
-    }
-
-    return [];
+  function isVisibleRect(rect) {
+    return rect.bottom > 72 && rect.top < window.innerHeight - 24;
   }
 
-  function getComposerRoot(textarea) {
-    const buttonSelectors = [
-      '[data-testid="tweetButtonInline"]',
-      '[data-testid="tweetButton"]',
-      'button[data-testid*="tweet"]',
-      'button[data-testid*="Reply"]',
-      'button[data-testid*="reply"]'
-    ];
-
-    let el = textarea;
-    for (let i = 0; i < 25; i++) {
-      if (!el.parentElement) break;
-      el = el.parentElement;
-      for (const sel of buttonSelectors) {
-        if (el.querySelector(sel)) {
-          console.log(LOG_PREFIX, 'Found composer root via button:', sel, 'at depth', i);
-          return el;
-        }
-      }
-    }
-
-    // Fallback: look for the nearest dialog/modal/layer
-    const dialog = textarea.closest('[role="dialog"]') ||
-                   textarea.closest('[aria-modal="true"]') ||
-                   textarea.closest('[data-testid="mask"]')?.parentElement;
-    if (dialog) {
-      console.log(LOG_PREFIX, 'Found composer root via dialog/modal');
-      return dialog;
-    }
-
-    // Fallback: walk up to a reasonable container
-    el = textarea;
-    for (let i = 0; i < 15; i++) {
-      if (!el.parentElement) break;
-      el = el.parentElement;
-      const groups = el.querySelectorAll('[role="group"]');
-      if (groups.length > 0) {
-        console.log(LOG_PREFIX, 'Found composer root via role=group at depth', i);
-        return el;
-      }
-    }
-
-    console.log(LOG_PREFIX, 'Using fallback composer root');
-    return textarea.parentElement?.parentElement?.parentElement?.parentElement?.parentElement || null;
+  function findTweetId(article) {
+    const timeLink = article.querySelector('a[href*="/status/"] time')?.closest('a[href*="/status/"]');
+    const fallback = timeLink || article.querySelector('a[href*="/status/"]');
+    const href = fallback?.getAttribute('href') || '';
+    const match = href.match(/\/status\/(\d+)/);
+    return match ? match[1] : '';
   }
 
-  function getTweetTextAboveComposer(composerRoot) {
-    if (!composerRoot) return '';
+  function findTweetText(article) {
+    const el = article.querySelector('[data-testid="tweetText"]') ||
+      article.querySelector('[lang]') ||
+      article.querySelector('div[dir="auto"]');
+    return normalizeWhitespace(el?.innerText || '');
+  }
 
-    const selectors = [
-      '[data-testid="tweetText"]',
-      'article [lang]',
-      'article div[dir="auto"]'
-    ];
+  function findPosterHandle(article) {
+    const userName = article.querySelector('[data-testid="User-Name"]');
+    if (!userName) return '';
 
-    for (const sel of selectors) {
-      const el = composerRoot.querySelector(sel);
-      if (el && el.innerText.trim()) return el.innerText.trim();
-    }
-
-    // Walk up to find tweet text
-    let el = composerRoot;
-    for (let i = 0; i < 15; i++) {
-      el = el.parentElement;
-      if (!el) break;
-      for (const sel of selectors) {
-        const tweet = el.querySelector(sel);
-        if (tweet && tweet.innerText.trim()) return tweet.innerText.trim();
-      }
-    }
-
-    // Last resort: find any tweet text on the page
-    const allTweetTexts = document.querySelectorAll('[data-testid="tweetText"]');
-    if (allTweetTexts.length > 0) {
-      return allTweetTexts[0].innerText.trim();
+    const links = Array.from(userName.querySelectorAll('a[href^="/"]'));
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      if (!href || href.includes('/status/')) continue;
+      const handle = href.replace(/^\//, '').split('/')[0];
+      if (handle) return `@${handle}`;
     }
     return '';
   }
 
-  function findToolbarOrInsertionPoint(composerRoot) {
-    if (!composerRoot) return null;
+  function findReplyButton(article) {
+    return article.querySelector('button[data-testid="reply"]') ||
+      article.querySelector('[data-testid="reply"]');
+  }
 
-    const selectors = [
-      '[role="toolbar"]',
-      '[data-testid="toolBar"]',
-      '[data-testid="Toolbar"]'
-    ];
+  function collectCandidateArticles() {
+    return Array.from(document.querySelectorAll('article'))
+      .map((article) => {
+        const postId = findTweetId(article);
+        const text = findTweetText(article);
+        if (!postId || !text) return null;
 
-    for (const sel of selectors) {
-      const el = composerRoot.querySelector(sel);
-      if (el) {
-        console.log(LOG_PREFIX, 'Found toolbar via:', sel);
-        return el;
+        const rect = article.getBoundingClientRect();
+        return {
+          postId,
+          article,
+          text,
+          rect,
+          posterHandle: findPosterHandle(article),
+          context: {
+            posterHandle: findPosterHandle(article),
+            threadTweets: [text]
+          }
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.rect.top - b.rect.top);
+  }
+
+  function ensureUiRoots() {
+    if (!state.overlayRoot) {
+      const overlay = document.createElement('div');
+      overlay.className = 'xga-overlay-root';
+      document.body.appendChild(overlay);
+      state.overlayRoot = overlay;
+    }
+
+    if (!state.drawerRoot) {
+      const drawer = document.createElement('div');
+      drawer.className = 'xga-drawer-root';
+      document.body.appendChild(drawer);
+      state.drawerRoot = drawer;
+    }
+  }
+
+  function createDraftRecord(item) {
+    return {
+      postId: item.postId,
+      article: item.article,
+      text: item.text,
+      posterHandle: item.posterHandle,
+      context: item.context,
+      status: 'idle',
+      strategyType: null,
+      baseTone: null,
+      selectedMode: 'auto',
+      autoText: '',
+      editedText: '',
+      error: '',
+      lastSeenAt: Date.now()
+    };
+  }
+
+  function updateDraftRecord(record, item) {
+    record.article = item.article;
+    record.posterHandle = item.posterHandle;
+    record.context = item.context;
+    record.lastSeenAt = Date.now();
+
+    if (record.text !== item.text && !['sending', 'sent'].includes(record.status)) {
+      record.text = item.text;
+      record.autoText = '';
+      record.editedText = '';
+      record.strategyType = null;
+      record.baseTone = null;
+      record.error = '';
+      record.status = 'idle';
+      return;
+    }
+
+    record.text = item.text;
+  }
+
+  function pruneDrafts() {
+    if (state.drafts.size <= MAX_TRACKED_POSTS) return;
+
+    const removable = Array.from(state.drafts.values())
+      .filter((record) => !state.visibleIds.includes(record.postId) && !state.priorityIds.includes(record.postId) && !['sending'].includes(record.status))
+      .sort((a, b) => a.lastSeenAt - b.lastSeenAt);
+
+    while (state.drafts.size > MAX_TRACKED_POSTS && removable.length > 0) {
+      const next = removable.shift();
+      state.drafts.delete(next.postId);
+    }
+  }
+
+  function syncDraftsWithFeed(items) {
+    for (const item of items) {
+      const record = state.drafts.get(item.postId);
+      if (record) {
+        updateDraftRecord(record, item);
+      } else {
+        state.drafts.set(item.postId, createDraftRecord(item));
       }
     }
+    pruneDrafts();
+  }
 
-    // Look for role="group" which X uses for the button toolbar
-    const groups = composerRoot.querySelectorAll('[role="group"]');
-    if (groups.length > 0) {
-      console.log(LOG_PREFIX, 'Found toolbar via role=group, count:', groups.length);
-      return groups[groups.length - 1];
+  function computePriority(items) {
+    const viewportMid = window.innerHeight / 2;
+    const visible = items.filter((item) => isVisibleRect(item.rect));
+    const lookahead = items
+      .filter((item) => item.rect.top >= window.innerHeight - 24)
+      .slice(0, LOOKAHEAD_COUNT);
+
+    const visibleSorted = [...visible].sort((a, b) => a.rect.top - b.rect.top);
+    const centered = [...visible].sort((a, b) => {
+      const aDistance = Math.abs((a.rect.top + a.rect.bottom) / 2 - viewportMid);
+      const bDistance = Math.abs((b.rect.top + b.rect.bottom) / 2 - viewportMid);
+      return aDistance - bDistance;
+    })[0];
+
+    const priority = [];
+    if (centered) priority.push(centered.postId);
+    for (const item of visibleSorted) {
+      if (!priority.includes(item.postId)) priority.push(item.postId);
+    }
+    for (const item of lookahead) {
+      if (!priority.includes(item.postId)) priority.push(item.postId);
     }
 
-    // Look for the row containing media buttons (img, gif, poll icons)
-    const svgButtons = composerRoot.querySelectorAll('button svg');
-    if (svgButtons.length >= 3) {
-      const toolbarRow = svgButtons[0].closest('div[class]');
-      if (toolbarRow) {
-        const parent = toolbarRow.parentElement;
-        if (parent && parent.children.length >= 3) {
-          console.log(LOG_PREFIX, 'Found toolbar via svg button heuristic');
-          return parent;
-        }
-      }
+    state.visibleIds = visibleSorted.map((item) => item.postId);
+    state.priorityIds = priority;
+
+    for (const postId of priority) {
+      const record = state.drafts.get(postId);
+      if (!record) continue;
+      if (record.status === 'idle') record.status = 'queued';
+    }
+  }
+
+  function shouldUseDrawer(items) {
+    const anchor = items.find((item) => state.visibleIds.includes(item.postId));
+    if (!anchor) return window.innerWidth < 1400;
+    return window.innerWidth - anchor.rect.right < CARD_WIDTH + 24;
+  }
+
+  function getStrategyLabel(record) {
+    return STRATEGY_LABELS[record.strategyType] || 'Auto Draft';
+  }
+
+  function getStatusLabel(record) {
+    switch (record.status) {
+      case 'queued':
+        return 'Queued';
+      case 'generating':
+        return 'Generating';
+      case 'ready':
+        return 'Ready';
+      case 'skipped':
+        return 'Skipped';
+      case 'failed':
+        return 'Failed';
+      case 'sending':
+        return 'Sending';
+      case 'sent':
+        return 'Sent';
+      default:
+        return 'Idle';
+    }
+  }
+
+  function createModeSelect(record) {
+    const select = document.createElement('select');
+    select.className = 'xga-card-select';
+
+    const autoOption = document.createElement('option');
+    autoOption.value = 'auto';
+    autoOption.textContent = 'Auto';
+    select.appendChild(autoOption);
+
+    for (const tone of TONES) {
+      const option = document.createElement('option');
+      option.value = tone.key;
+      option.textContent = tone.label;
+      select.appendChild(option);
     }
 
-    console.log(LOG_PREFIX, 'No toolbar found in composer root');
+    select.value = record.selectedMode || 'auto';
+    select.addEventListener('change', (event) => {
+      record.selectedMode = event.target.value;
+    });
+    return select;
+  }
+
+  function createButton(label, className, onClick, disabled = false) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = label;
+    button.disabled = disabled;
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onClick();
+    });
+    return button;
+  }
+
+  function buildCard(record, compact = false) {
+    const card = document.createElement('section');
+    card.className = `xga-card${compact ? ' compact' : ''}`;
+
+    const header = document.createElement('div');
+    header.className = 'xga-card-header';
+
+    const title = document.createElement('div');
+    title.className = 'xga-card-title';
+    title.textContent = getStrategyLabel(record);
+
+    const badge = document.createElement('span');
+    badge.className = `xga-card-badge ${record.status}`;
+    badge.textContent = getStatusLabel(record);
+
+    header.appendChild(title);
+    header.appendChild(badge);
+    card.appendChild(header);
+
+    const preview = document.createElement('div');
+    preview.className = 'xga-card-preview';
+    preview.textContent = record.posterHandle ? `${record.posterHandle} · ${record.text}` : record.text;
+    card.appendChild(preview);
+
+    if (record.error && ['failed', 'skipped'].includes(record.status)) {
+      const reason = document.createElement('div');
+      reason.className = 'xga-card-reason';
+      reason.textContent = record.error;
+      card.appendChild(reason);
+    }
+
+    if (['ready', 'failed', 'sending', 'sent'].includes(record.status)) {
+      const textarea = document.createElement('textarea');
+      textarea.className = 'xga-card-textarea';
+      textarea.value = record.editedText || record.autoText || '';
+      textarea.placeholder = 'Draft will appear here';
+      textarea.disabled = record.status === 'sending';
+      textarea.addEventListener('input', (event) => {
+        record.editedText = event.target.value;
+      });
+      card.appendChild(textarea);
+    } else {
+      const status = document.createElement('div');
+      status.className = 'xga-card-statusline';
+      status.textContent = record.status === 'generating'
+        ? 'Preparing draft...'
+        : record.status === 'queued'
+          ? 'Waiting in queue...'
+          : 'No draft yet.';
+      card.appendChild(status);
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'xga-card-controls';
+    controls.appendChild(createModeSelect(record));
+
+    const actions = document.createElement('div');
+    actions.className = 'xga-card-actions';
+
+    actions.appendChild(createButton(
+      'Send',
+      'xga-card-btn primary',
+      () => sendDraft(record.postId),
+      !['ready', 'failed'].includes(record.status) || !normalizeWhitespace(record.editedText || record.autoText)
+    ));
+
+    actions.appendChild(createButton(
+      'Regenerate',
+      'xga-card-btn',
+      () => regenerateDraft(record.postId, 'gemini-local'),
+      record.status === 'sending'
+    ));
+
+    actions.appendChild(createButton(
+      'Claude',
+      'xga-card-btn subtle',
+      () => regenerateDraft(record.postId, 'claude-local'),
+      record.status === 'sending'
+    ));
+
+    actions.appendChild(createButton(
+      'Skip',
+      'xga-card-btn danger',
+      () => skipDraft(record.postId),
+      record.status === 'sending'
+    ));
+
+    controls.appendChild(actions);
+    card.appendChild(controls);
+
+    return card;
+  }
+
+  function renderInlineCards(items) {
+    state.overlayRoot.innerHTML = '';
+    state.overlayRoot.classList.add('active');
+    state.drawerRoot.innerHTML = '';
+    state.drawerRoot.classList.remove('active');
+
+    const visibleItems = items.filter((item) => state.visibleIds.includes(item.postId));
+    let previousBottom = 24;
+
+    for (const item of visibleItems) {
+      const record = state.drafts.get(item.postId);
+      if (!record) continue;
+
+      const card = buildCard(record, false);
+      const desiredTop = Math.max(24, item.rect.top);
+      const top = Math.max(desiredTop, previousBottom + 12);
+      previousBottom = top + 220;
+      const left = Math.min(window.innerWidth - CARD_WIDTH - 20, item.rect.right + 20);
+      card.style.transform = `translate(${left}px, ${top}px)`;
+      state.overlayRoot.appendChild(card);
+    }
+  }
+
+  function renderDrawer(items) {
+    state.overlayRoot.innerHTML = '';
+    state.overlayRoot.classList.remove('active');
+    state.drawerRoot.innerHTML = '';
+    state.drawerRoot.classList.add('active');
+
+    const list = document.createElement('div');
+    list.className = 'xga-drawer-list';
+
+    for (const item of items.filter((entry) => state.visibleIds.includes(entry.postId))) {
+      const record = state.drafts.get(item.postId);
+      if (!record) continue;
+      list.appendChild(buildCard(record, true));
+    }
+
+    state.drawerRoot.appendChild(list);
+  }
+
+  function render(items) {
+    ensureUiRoots();
+    if (shouldUseDrawer(items)) {
+      renderDrawer(items);
+      return;
+    }
+    renderInlineCards(items);
+  }
+
+  function getQueuedRecord() {
+    for (const postId of state.priorityIds) {
+      const record = state.drafts.get(postId);
+      if (record?.status === 'queued') return record;
+    }
     return null;
   }
 
-  function getThreadContext(composerRoot) {
-    const context = { threadTweets: [], posterHandle: '' };
-    if (!composerRoot) return context;
+  async function processQueue() {
+    if (state.queueBusy) return;
+    const record = getQueuedRecord();
+    if (!record) return;
 
-    let container = composerRoot;
-    for (let i = 0; i < 20; i++) {
-      if (!container.parentElement) break;
-      container = container.parentElement;
-      if (container.querySelectorAll('article').length > 0) break;
-    }
+    state.queueBusy = true;
+    record.status = 'generating';
+    render(collectCandidateArticles());
 
-    const articles = container.querySelectorAll('article');
-    for (const article of articles) {
-      if (composerRoot.contains(article)) continue;
-      const textEl = article.querySelector('[data-testid="tweetText"]');
-      if (textEl?.innerText?.trim()) context.threadTweets.push(textEl.innerText.trim());
-    }
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'GENERATE_DRAFT',
+        mode: 'auto',
+        phase: 'quick',
+        provider: 'gemini-local',
+        tweetText: record.text,
+        context: record.context,
+        requestId: createRequestId()
+      });
 
-    const lastArticle = articles.length > 0 ? articles[articles.length - 1] : null;
-    if (lastArticle && !composerRoot.contains(lastArticle)) {
-      const userNameEl = lastArticle.querySelector('[data-testid="User-Name"]');
-      if (userNameEl) {
-        const handleLink = userNameEl.querySelector('a[href^="/"]');
-        if (handleLink) {
-          const href = handleLink.getAttribute('href');
-          context.posterHandle = '@' + href.replace(/^\//, '').split('/')[0];
-        }
+      if (response.status === 'ready') {
+        record.status = 'ready';
+        record.strategyType = response.strategyType;
+        record.baseTone = response.baseTone;
+        record.autoText = response.text;
+        record.editedText = response.text;
+        record.error = '';
+      } else if (response.status === 'skipped') {
+        record.status = 'skipped';
+        record.error = response.reason || 'Skipped';
+      } else {
+        record.status = 'failed';
+        record.error = response.reason || 'Draft generation failed';
       }
+    } catch (error) {
+      record.status = 'failed';
+      record.error = formatGenerationError(error);
+    } finally {
+      state.queueBusy = false;
+      const items = collectCandidateArticles();
+      syncDraftsWithFeed(items);
+      computePriority(items);
+      render(items);
+      processQueue();
     }
-
-    return context;
   }
 
-  // --- Text Insertion ---
+  function skipDraft(postId) {
+    const record = state.drafts.get(postId);
+    if (!record || record.status === 'sending') return;
+    record.status = 'skipped';
+    record.error = 'Skipped manually.';
+    render(collectCandidateArticles());
+  }
+
+  async function regenerateDraft(postId, provider) {
+    const record = state.drafts.get(postId);
+    if (!record || record.status === 'sending') return;
+
+    record.status = 'generating';
+    record.error = '';
+    render(collectCandidateArticles());
+
+    try {
+      const mode = record.selectedMode || 'auto';
+      const response = await chrome.runtime.sendMessage({
+        type: 'GENERATE_DRAFT',
+        mode: mode === 'auto' ? 'auto' : 'tone',
+        tone: mode === 'auto' ? null : mode,
+        phase: 'full',
+        provider,
+        tweetText: record.text,
+        context: record.context,
+        currentDraft: record.editedText || record.autoText,
+        baseToneHint: record.baseTone,
+        strategyTypeHint: record.strategyType,
+        requestId: createRequestId()
+      });
+
+      if (response.status === 'ready') {
+        record.status = 'ready';
+        record.strategyType = response.strategyType || record.strategyType;
+        record.baseTone = response.baseTone || record.baseTone;
+        record.autoText = response.text;
+        record.editedText = response.text;
+        record.error = '';
+      } else if (response.status === 'skipped') {
+        record.status = 'skipped';
+        record.error = response.reason || 'Skipped';
+      } else {
+        record.status = 'failed';
+        record.error = response.reason || 'Draft generation failed';
+      }
+    } catch (error) {
+      record.status = 'failed';
+      record.error = formatGenerationError(error);
+    }
+
+    render(collectCandidateArticles());
+  }
+
+  function findComposerTextarea(root = document) {
+    const selectors = [
+      '[data-testid="tweetTextarea_0"]',
+      '[data-testid="tweetTextarea_0_label"]',
+      'div[role="textbox"][contenteditable="true"]',
+      'div[data-contents="true"]'
+    ];
+
+    for (const selector of selectors) {
+      const el = root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function findSendButton(root) {
+    return root.querySelector('[data-testid="tweetButton"]') ||
+      root.querySelector('[data-testid="tweetButtonInline"]') ||
+      root.querySelector('button[data-testid*="tweet"]');
+  }
+
   function insertTextIntoComposer(textarea, text) {
     const editable = textarea.closest('[contenteditable="true"]') ||
-                     textarea.querySelector('[contenteditable="true"]') ||
-                     (textarea.getAttribute('contenteditable') === 'true' ? textarea : null) ||
-                     textarea;
+      textarea.querySelector('[contenteditable="true"]') ||
+      (textarea.getAttribute('contenteditable') === 'true' ? textarea : null) ||
+      textarea;
 
-    console.log(LOG_PREFIX, 'Inserting text into:', editable.tagName, editable.className?.substring(0, 50));
     editable.focus();
-
-    // Strategy 1: use execCommand (most compatible with React)
     const selection = window.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editable);
     selection.removeAllRanges();
     selection.addRange(range);
-
     document.execCommand('insertText', false, text);
 
-    // Verify it worked
     setTimeout(() => {
-      const current = editable.innerText?.trim();
-      if (current !== text.trim()) {
-        console.log(LOG_PREFIX, 'execCommand did not work, trying fallback');
-        // Strategy 2: direct DOM manipulation + events
-        const spans = editable.querySelectorAll('[data-text="true"]');
-        if (spans.length > 0) {
-          spans.forEach(s => s.textContent = '');
-          spans[0].textContent = text;
-        } else {
-          editable.textContent = text;
-        }
-        editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-        editable.dispatchEvent(new Event('change', { bubbles: true }));
+      const current = normalizeWhitespace(editable.innerText);
+      if (current === normalizeWhitespace(text)) return;
+
+      const spans = editable.querySelectorAll('[data-text="true"]');
+      if (spans.length > 0) {
+        spans.forEach((span) => { span.textContent = ''; });
+        spans[0].textContent = text;
+      } else {
+        editable.textContent = text;
       }
+      editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      editable.dispatchEvent(new Event('change', { bubbles: true }));
     }, 100);
   }
 
-  function getComposerText(textarea) {
-    const editable = textarea.closest('[contenteditable="true"]') ||
-                     textarea.querySelector('[contenteditable="true"]') ||
-                     (textarea.getAttribute('contenteditable') === 'true' ? textarea : null) ||
-                     textarea;
-    return editable.innerText?.trim() || '';
+  function waitFor(condition, timeoutMs = 6000) {
+    const startedAt = Date.now();
+
+    return new Promise((resolve, reject) => {
+      function tick() {
+        const result = condition();
+        if (result) {
+          resolve(result);
+          return;
+        }
+        if (Date.now() - startedAt >= timeoutMs) {
+          reject(new Error('Timed out waiting for X reply composer'));
+          return;
+        }
+        setTimeout(tick, 80);
+      }
+      tick();
+    });
   }
 
-  // --- UI Injection ---
-  function injectToneButtons(textarea) {
-    // Skip if already injected nearby
-    const nearbyRow = textarea.closest('[role="dialog"]')?.querySelector('.xga-tone-row') ||
-                      textarea.parentElement?.parentElement?.parentElement?.querySelector('.xga-tone-row');
-    if (nearbyRow) return;
-
-    const composerRoot = getComposerRoot(textarea);
-    if (!composerRoot) {
-      console.log(LOG_PREFIX, 'No composer root found, skipping');
-      return;
-    }
-    if (composerRoot.querySelector('.xga-tone-row')) return;
-
-    const toolbar = findToolbarOrInsertionPoint(composerRoot);
-
-    const row = document.createElement('div');
-    row.className = 'xga-tone-row';
-
-    TONES.forEach(tone => {
-      row.appendChild(createToneButton(tone, textarea, composerRoot));
-    });
-
-    if (toolbar && toolbar.parentElement) {
-      toolbar.parentElement.insertBefore(row, toolbar);
-      console.log(LOG_PREFIX, 'Injected tone row before toolbar');
-    } else {
-      // Fallback: append after the textbox area
-      let insertTarget = textarea;
-      for (let i = 0; i < 5; i++) {
-        if (insertTarget.parentElement && insertTarget.parentElement !== composerRoot) {
-          insertTarget = insertTarget.parentElement;
-        }
-      }
-      insertTarget.parentElement?.appendChild(row);
-      console.log(LOG_PREFIX, 'Injected tone row via fallback append');
+  async function openReplyComposer(article) {
+    const replyButton = findReplyButton(article);
+    if (!replyButton) {
+      throw new Error('Could not find the reply button for this post.');
     }
 
-    state.activeComposer = textarea;
-  }
+    const knownDialogs = new Set(Array.from(document.querySelectorAll('[role="dialog"]')));
+    replyButton.click();
 
-  function createToneButton(tone, textarea, composerRoot) {
-    const btn = document.createElement('button');
-    btn.className = 'xga-tone-btn';
-    btn.dataset.tone = tone.key;
-    btn.innerHTML = `<span>${tone.icon}</span><span>${tone.label}</span>`;
+    return waitFor(() => {
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+      const dialog = dialogs.find((node) => !knownDialogs.has(node) && findComposerTextarea(node)) ||
+        dialogs.find((node) => findComposerTextarea(node));
+      if (!dialog) return null;
 
-    btn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      const textarea = findComposerTextarea(dialog);
+      const sendButton = findSendButton(dialog);
+      if (!textarea || !sendButton) return null;
 
-      const row = btn.closest('.xga-tone-row');
-      row.querySelectorAll('.xga-tone-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active', 'loading');
-      btn.innerHTML = `<span class="xga-spinner"></span><span>${tone.label}</span>`;
-
-      try {
-        const requestId = createRequestId();
-        const startedAt = nowMs();
-        const tweetText = getTweetTextAboveComposer(composerRoot);
-        const context = getThreadContext(composerRoot);
-        console.log(LOG_PREFIX, `[${requestId}] Generate start`, {
-          tone: tone.key,
-          tweetPreview: tweetText.substring(0, 50),
-          threadCount: context.threadTweets.length
-        });
-        state.originalPostText = tweetText;
-        state.currentTone = tone.key;
-
-        const response = await chrome.runtime.sendMessage({
-          type: 'GENERATE_REPLY',
-          tweetText,
-          tone: tone.key,
-          context,
-          requestId
-        });
-
-        if (response.error) throw new Error(response.error);
-
-        console.log(LOG_PREFIX, `[${requestId}] Generate success in ${formatDuration(nowMs() - startedAt)}`, {
-          replyPreview: response.text.substring(0, 80)
-        });
-        state.aiGeneratedText = response.text;
-        insertTextIntoComposer(textarea, response.text);
-      } catch (e) {
-        const errorMessage = formatGenerationError(e);
-        console.error(LOG_PREFIX, 'Generation failed:', errorMessage);
-        showInlineStatus(row, errorMessage);
-        state.aiGeneratedText = null;
-      }
-
-      btn.classList.remove('loading');
-      btn.innerHTML = `<span>${tone.icon}</span><span>${tone.label}</span>`;
+      return { dialog, textarea, sendButton };
     });
-
-    return btn;
   }
 
+  async function sendDraft(postId) {
+    const record = state.drafts.get(postId);
+    if (!record || !record.article) return;
 
-  // --- Reply Interception for Tone Learning ---
-  function interceptReplyButton() {
-    document.addEventListener('click', async (e) => {
-      const btn = e.target.closest('[data-testid="tweetButtonInline"], [data-testid="tweetButton"], button[data-testid*="tweet"], button[data-testid*="reply"]');
-      if (!btn) return;
-      if (!state.aiGeneratedText || !state.currentTone) return;
+    const finalText = normalizeWhitespace(record.editedText || record.autoText);
+    if (!finalText) return;
 
-      const composer = state.activeComposer;
-      if (!composer) return;
+    record.status = 'sending';
+    record.error = '';
+    render(collectCandidateArticles());
 
-      const userFinalText = getComposerText(composer);
-      if (!userFinalText) return;
+    try {
+      const composer = await openReplyComposer(record.article);
+      insertTextIntoComposer(composer.textarea, finalText);
+      await waitFor(() => normalizeWhitespace(composer.textarea.innerText || composer.textarea.textContent || '') === finalText, 2500).catch(() => true);
+      composer.sendButton.click();
+      await waitFor(() => !composer.dialog.isConnected, 8000);
 
-      console.log(LOG_PREFIX, 'Capturing comparison for tone:', state.currentTone);
+      record.status = 'sent';
+      record.error = '';
 
-      chrome.runtime.sendMessage({
-        type: 'SAVE_COMPARISON',
-        tone: state.currentTone,
-        entry: {
-          originalPost: state.originalPostText || '',
-          aiGenerated: state.aiGeneratedText,
-          userFinal: userFinalText,
-          timestamp: Date.now()
-        }
-      });
+      if (record.baseTone && record.autoText) {
+        chrome.runtime.sendMessage({
+          type: 'SAVE_COMPARISON',
+          tone: record.baseTone,
+          entry: {
+            originalPost: record.text,
+            aiGenerated: record.autoText,
+            userFinal: finalText,
+            timestamp: Date.now()
+          }
+        });
+      }
+    } catch (error) {
+      record.status = 'failed';
+      record.error = formatGenerationError(error);
+      console.error(LOG_PREFIX, 'Send failed', error);
+    }
 
-      state.aiGeneratedText = null;
-      state.currentTone = null;
-      state.originalPostText = null;
-      state.activeComposer = null;
-    }, true);
+    render(collectCandidateArticles());
   }
 
-  // --- Observer ---
-  function observeComposers() {
-    let debounceTimer = null;
-    const scan = () => {
-      const composers = findComposers();
-      composers.forEach(textarea => injectToneButtons(textarea));
-    };
+  function refresh() {
+    const items = collectCandidateArticles();
+    syncDraftsWithFeed(items);
+    computePriority(items);
+    render(items);
+    processQueue();
+  }
 
+  function scheduleRefresh() {
+    if (state.refreshScheduled) return;
+    state.refreshScheduled = true;
+    requestAnimationFrame(() => {
+      state.refreshScheduled = false;
+      refresh();
+    });
+  }
+
+  function observeFeed() {
     const observer = new MutationObserver(() => {
-      if (debounceTimer) return;
-      debounceTimer = setTimeout(() => {
-        debounceTimer = null;
-        scan();
-      }, 300);
+      scheduleRefresh();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('scroll', scheduleRefresh, { passive: true });
+    window.addEventListener('resize', scheduleRefresh);
 
-    // Initial scan + delayed retry (X loads content progressively)
-    scan();
-    setTimeout(scan, 1000);
-    setTimeout(scan, 3000);
-    console.log(LOG_PREFIX, 'Observer started');
+    refresh();
+    setTimeout(refresh, 1000);
+    setTimeout(refresh, 3000);
+    console.log(LOG_PREFIX, 'Feed observer started');
   }
 
-  // --- Init ---
   function init() {
     console.log(LOG_PREFIX, 'Content script initialized on', window.location.href);
-    observeComposers();
-    interceptReplyButton();
+    ensureUiRoots();
+    observeFeed();
   }
 
   if (document.readyState === 'loading') {

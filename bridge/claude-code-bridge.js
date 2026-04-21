@@ -2,29 +2,24 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { GEMINI_CLI_MODEL, buildUserMessage } from '../lib/api.js';
+import { CLAUDE_CODE_HAIKU_MODEL, buildUserMessage } from '../lib/api.js';
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
-const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '18000');
-const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
-const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
-const TRACE_LOG_PATH = process.env.XGA_GEMINI_TRACE_LOG || '/tmp/xga-gemini-bridge.log';
-const GEMINI_CONFIG_DIRNAME = '.gemini';
-const GEMINI_AUTH_FILES = ['google_accounts.json', 'installation_id', 'oauth_creds.json', 'state.json'];
-const GEMINI_STATUS_TTL_MS = 10000;
-const BRIDGE_ROOT = path.join(os.tmpdir(), 'xga-gemini-cli-bridge');
-const BRIDGE_HOME_ROOT = path.join(BRIDGE_ROOT, 'home');
-const BRIDGE_WORKDIR = path.join(BRIDGE_ROOT, 'workdir');
-const BRIDGE_SYSTEM_PROMPT_PATH = path.join(BRIDGE_ROOT, 'system.md');
+const DEFAULT_PORT = Number(process.env.XGA_CLAUDE_BRIDGE_PORT || '43118');
+const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_CLAUDE_CLI_TIMEOUT_MS || '25000');
+const DEFAULT_MODEL = process.env.XGA_CLAUDE_CODE_MODEL || CLAUDE_CODE_HAIKU_MODEL;
+const DEFAULT_CLAUDE_BIN = process.env.XGA_CLAUDE_BIN || 'claude';
+const TRACE_LOG_PATH = process.env.XGA_CLAUDE_TRACE_LOG || '/tmp/xga-claude-code-bridge.log';
+const PROMPT_DUMP_PATH = process.env.XGA_CLAUDE_PROMPT_DUMP || '';
+const CLAUDE_STATUS_TTL_MS = 10000;
+const BRIDGE_WORKDIR = path.join(os.tmpdir(), 'xga-claude-code-bridge', 'workdir');
+const CLAUDE_BRIDGE_SETTINGS = JSON.stringify({ disableAllHooks: true });
 
-let runtimePromise = null;
-let queueTail = Promise.resolve();
-let geminiStatusCache = {
+let claudeStatusCache = {
   value: null,
   expiresAt: 0
 };
@@ -77,16 +72,20 @@ function sendJson(res, statusCode, payload) {
 }
 
 function buildCliPrompt(systemPrompt, userPrompt) {
-  return [
-    'System instructions:',
-    systemPrompt,
+  return `${systemPrompt}\n\nUser request:\n${userPrompt}`;
+}
+
+async function dumpPromptIfConfigured(prompt, requestId) {
+  if (!PROMPT_DUMP_PATH) return;
+
+  const payload = [
+    `requestId: ${requestId}`,
+    `timestamp: ${new Date().toISOString()}`,
     '',
-    'User request:',
-    userPrompt,
-    '',
-    'Follow the system instructions exactly.',
-    'Return only the requested final output.'
+    prompt
   ].join('\n');
+
+  await writeFile(PROMPT_DUMP_PATH, payload, 'utf8');
 }
 
 function extractFirstJsonObject(text) {
@@ -127,284 +126,245 @@ function extractFirstJsonObject(text) {
   return null;
 }
 
-function parseCliJsonOutput(stdout) {
+function parseJsonObject(stdout, errorMessage) {
   const jsonText = extractFirstJsonObject(stdout);
   if (!jsonText) {
-    throw new BridgeError('cli_invalid_json', 'Gemini CLI returned invalid JSON output', 502);
+    throw new BridgeError('cli_invalid_json', errorMessage, 502);
   }
 
-  let payload;
   try {
-    payload = JSON.parse(jsonText);
+    return JSON.parse(jsonText);
   } catch {
-    throw new BridgeError('cli_invalid_json', 'Gemini CLI returned invalid JSON output', 502);
+    throw new BridgeError('cli_invalid_json', errorMessage, 502);
+  }
+}
+
+function parseClaudeJsonOutput(stdout) {
+  const payload = parseJsonObject(stdout, 'Claude Code returned invalid JSON output');
+
+  if (payload?.is_error === true) {
+    throw new BridgeError('cli_failure', payload.result?.trim() || 'Claude Code failed to generate a reply.', 502);
   }
 
-  if (payload?.error?.message) {
-    throw new BridgeError('cli_failure', payload.error.message, 502);
+  if (typeof payload?.result !== 'string') {
+    throw new BridgeError('cli_invalid_json', 'Claude Code returned invalid JSON output', 502);
   }
 
-  if (typeof payload?.response !== 'string') {
-    throw new BridgeError('cli_invalid_json', 'Gemini CLI returned invalid JSON output', 502);
-  }
-
-  const text = payload.response.trim();
+  const text = payload.result.trim();
   if (!text) {
-    throw new BridgeError('cli_empty_response', 'Gemini CLI returned no text response', 502);
+    throw new BridgeError('cli_empty_response', 'Claude Code returned no text response', 502);
   }
 
   return text;
 }
 
+function parseClaudeAuthStatus(stdout) {
+  const payload = parseJsonObject(stdout, 'Claude Code returned invalid auth status output');
+  return {
+    loggedIn: payload.loggedIn === true,
+    authMethod: payload.authMethod || null,
+    email: payload.email || null,
+    subscriptionType: payload.subscriptionType || null,
+    apiProvider: payload.apiProvider || null
+  };
+}
+
 function mapCliExecutionError(error, stdout = '', stderr = '') {
   if (error?.code === 'ENOENT') {
-    return new BridgeError('gemini_not_found', 'Gemini CLI is not installed or not on PATH.', 503);
+    return new BridgeError('claude_not_found', 'Claude Code CLI is not installed or not on PATH.', 503);
   }
 
   if (error?.code === 'ETIMEDOUT' || error?.killed) {
-    return new BridgeError('gemini_timeout', 'Gemini CLI timed out while generating a reply.', 504);
+    return new BridgeError('claude_timeout', 'Claude Code timed out while generating a reply.', 504);
   }
 
   try {
-    return new BridgeError('cli_failure', parseCliJsonOutput(stdout), 502);
+    parseClaudeJsonOutput(stdout);
   } catch (parsedError) {
     if (parsedError instanceof BridgeError && parsedError.code === 'cli_failure') return parsedError;
   }
 
   const combined = `${stderr}\n${stdout}`.trim();
 
-  if (/sign in|login|log in|authenticate|authentication|api key|auth/i.test(combined)) {
-    return new BridgeError('gemini_auth_required', 'Gemini CLI is not authenticated. Run `gemini` once locally and sign in.', 503);
+  if (/auth login|not logged in|not authenticated|login required|subscription/i.test(combined)) {
+    return new BridgeError('claude_auth_required', 'Claude Code is not authenticated. Run `claude auth login` locally and try again.', 503);
   }
 
   if (/model/i.test(combined) && /unknown|unsupported|invalid|not found/i.test(combined)) {
-    return new BridgeError('gemini_model_unavailable', 'Gemini CLI rejected the configured model.', 502);
+    return new BridgeError('claude_model_unavailable', 'Claude Code rejected the configured model.', 502);
   }
 
-  return new BridgeError('cli_failure', combined || 'Gemini CLI failed to generate a reply.', 502);
+  return new BridgeError('cli_failure', combined || 'Claude Code failed to generate a reply.', 502);
 }
 
-function buildMinimalSettings(sourceSettings = {}) {
-  return {
-    hooksConfig: {
-      enabled: false
-    },
-    skills: {
-      enabled: false
-    },
-    useWriteTodos: false,
-    context: {
-      fileName: '__XGA_DISABLED_CONTEXT__.md',
-      includeDirectoryTree: false,
-      discoveryMaxDirs: 0,
-      memoryBoundaryMarkers: [],
-      includeDirectories: [],
-      loadMemoryFromIncludeDirectories: false
-    },
-    security: {
-      auth: {
-        selectedType: sourceSettings?.security?.auth?.selectedType || 'oauth-personal'
-      }
-    }
-  };
+async function ensureBridgeWorkdir(dir = BRIDGE_WORKDIR) {
+  await mkdir(dir, { recursive: true });
+  return dir;
 }
 
-function buildBridgeSystemPrompt() {
-  return [
-    '# XGA Gemini Bridge',
-    '',
-    'You are a tiny headless reply engine for X.',
-    'Do not use tools or side channels.',
-    'Honor the caller-provided instructions exactly.',
-    'Return only the requested final output.'
-  ].join('\n');
-}
-
-async function ensureGeminiRuntime({
-  rootDir = BRIDGE_ROOT,
-  homeRoot = BRIDGE_HOME_ROOT,
-  workdir = BRIDGE_WORKDIR,
-  systemPromptPath = BRIDGE_SYSTEM_PROMPT_PATH
-} = {}) {
-  if (runtimePromise) return runtimePromise;
-
-  runtimePromise = (async () => {
-    const sourceConfigDir = path.join(os.homedir(), GEMINI_CONFIG_DIRNAME);
-    const targetConfigDir = path.join(homeRoot, GEMINI_CONFIG_DIRNAME);
-    await mkdir(targetConfigDir, { recursive: true });
-    await mkdir(workdir, { recursive: true });
-    await mkdir(rootDir, { recursive: true });
-
-    for (const fileName of GEMINI_AUTH_FILES) {
-      try {
-        await copyFile(path.join(sourceConfigDir, fileName), path.join(targetConfigDir, fileName));
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-      }
-    }
-
-    let sourceSettings = {};
-    try {
-      sourceSettings = JSON.parse(await readFile(path.join(sourceConfigDir, 'settings.json'), 'utf8'));
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-    }
-
-    await writeFile(
-      path.join(targetConfigDir, 'settings.json'),
-      `${JSON.stringify(buildMinimalSettings(sourceSettings), null, 2)}\n`,
-      'utf8'
-    );
-    await writeFile(systemPromptPath, `${buildBridgeSystemPrompt()}\n`, 'utf8');
-
-    logRequest('setup', 'Prepared Gemini runtime', {
-      homeRoot,
-      workdir,
-      systemPromptPath
-    });
-
-    return {
-      rootDir,
-      homeRoot,
-      workdir,
-      systemPromptPath
-    };
-  })().catch((error) => {
-    runtimePromise = null;
-    throw error;
-  });
-
-  return runtimePromise;
-}
-
-function buildGeminiExecInvocation({
-  geminiBin = DEFAULT_GEMINI_BIN,
+function buildClaudeExecInvocation({
+  claudeBin = DEFAULT_CLAUDE_BIN,
   model = DEFAULT_MODEL,
-  prompt,
-  runtime,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  userPrompt,
+  systemPrompt,
+  workdir = BRIDGE_WORKDIR,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  includeSystemPrompt = true
 }) {
+  const args = [
+    '-p',
+    userPrompt,
+    '--model',
+    model,
+    '--output-format',
+    'json',
+    '--max-turns',
+    '1',
+    '--no-session-persistence',
+    '--setting-sources',
+    'local',
+    '--settings',
+    CLAUDE_BRIDGE_SETTINGS,
+    '--effort',
+    'low',
+    '--disable-slash-commands',
+    '--tools',
+    ''
+  ];
+
+  if (includeSystemPrompt) {
+    args.push('--system-prompt', systemPrompt);
+  }
+
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+
   return {
-    file: geminiBin,
-    args: [
-      '--model',
-      model,
-      '--prompt',
-      prompt,
-      '--sandbox=false',
-      '--output-format',
-      'json'
-    ],
+    file: claudeBin,
+    args,
     options: {
-      cwd: runtime.workdir,
-      env: {
-        ...process.env,
-        GEMINI_CLI_HOME: runtime.homeRoot,
-        GEMINI_SYSTEM_MD: runtime.systemPromptPath,
-        HOME: runtime.homeRoot,
-        NO_COLOR: '1'
-      },
+      cwd: workdir,
+      env,
       timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024
     }
   };
 }
 
-function queueInvocation(task) {
-  const run = queueTail.then(task, task);
-  queueTail = run.catch(() => {});
-  return run;
-}
-
-async function getGeminiStatus({ geminiBin = DEFAULT_GEMINI_BIN } = {}) {
-  if (geminiStatusCache.value && geminiStatusCache.expiresAt > Date.now()) {
-    return geminiStatusCache.value;
+async function getClaudeStatus({ claudeBin = DEFAULT_CLAUDE_BIN } = {}) {
+  if (claudeStatusCache.value && claudeStatusCache.expiresAt > Date.now()) {
+    return claudeStatusCache.value;
   }
 
   let status;
   try {
-    const { stdout } = await execFileAsync(geminiBin, ['--version'], {
-      cwd: os.homedir(),
-      timeout: 5000,
-      maxBuffer: 64 * 1024
-    });
+    const [versionResult, authResult] = await Promise.all([
+      execFileAsync(claudeBin, ['--version'], {
+        cwd: os.homedir(),
+        timeout: 5000,
+        maxBuffer: 64 * 1024
+      }),
+      execFileAsync(claudeBin, ['auth', 'status'], {
+        cwd: os.homedir(),
+        timeout: 5000,
+        maxBuffer: 64 * 1024
+      })
+    ]);
+
     status = {
       installed: true,
-      binary: geminiBin,
-      version: stdout.trim()
+      binary: claudeBin,
+      version: versionResult.stdout.trim(),
+      ...parseClaudeAuthStatus(authResult.stdout)
     };
   } catch (error) {
     if (error?.code === 'ENOENT') {
       status = {
         installed: false,
-        binary: geminiBin
+        binary: claudeBin
       };
+    } else if (error?.stdout) {
+      try {
+        status = {
+          installed: true,
+          binary: claudeBin,
+          ...parseClaudeAuthStatus(error.stdout)
+        };
+      } catch {
+        status = {
+          installed: false,
+          binary: claudeBin,
+          error: error.message
+        };
+      }
     } else {
       status = {
         installed: false,
-        binary: geminiBin,
+        binary: claudeBin,
         error: error.message
       };
     }
   }
 
-  geminiStatusCache = {
+  claudeStatusCache = {
     value: status,
-    expiresAt: Date.now() + GEMINI_STATUS_TTL_MS
+    expiresAt: Date.now() + CLAUDE_STATUS_TTL_MS
   };
   return status;
 }
 
-async function invokeGeminiCli({
+async function invokeClaudeCode({
   systemPrompt,
   userPrompt,
   tweetText,
   context,
   requestId = `bridge-${Date.now().toString(36)}`,
   model = DEFAULT_MODEL,
-  geminiBin = DEFAULT_GEMINI_BIN,
+  claudeBin = DEFAULT_CLAUDE_BIN,
   timeoutMs = DEFAULT_TIMEOUT_MS
 }) {
   const startedAt = nowNs();
-  const runtime = await ensureGeminiRuntime();
+  const workdir = await ensureBridgeWorkdir();
   const resolvedUserPrompt = typeof userPrompt === 'string' && userPrompt.trim()
     ? userPrompt
     : buildUserMessage(tweetText, context);
-  const prompt = buildCliPrompt(systemPrompt, resolvedUserPrompt);
-  logRequest(requestId, 'Prepared CLI prompt', {
+  const combinedPrompt = buildCliPrompt(systemPrompt, resolvedUserPrompt);
+  logRequest(requestId, 'Prepared Claude prompt', {
     model,
-    promptLength: prompt.length,
+    promptLength: combinedPrompt.length,
     timeoutMs
   });
+  await dumpPromptIfConfigured(combinedPrompt, requestId);
 
-  return queueInvocation(async () => {
-    try {
-      const execStartedAt = nowNs();
-      const invocation = buildGeminiExecInvocation({
-        geminiBin,
-        model,
-        prompt,
-        runtime,
-        timeoutMs
-      });
-      const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
-      logRequest(requestId, `Gemini CLI process finished in ${formatDurationNs(execStartedAt)}`);
+  try {
+    const execStartedAt = nowNs();
+    const invocation = buildClaudeExecInvocation({
+      claudeBin,
+      model,
+      userPrompt: resolvedUserPrompt,
+      systemPrompt,
+      workdir,
+      timeoutMs,
+      includeSystemPrompt: true
+    });
+    const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
+    logRequest(requestId, `Claude Code process finished in ${formatDurationNs(execStartedAt)}`);
 
-      const parseStartedAt = nowNs();
-      const text = parseCliJsonOutput(stdout);
-      logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
-        responseLength: text.length
-      });
-      logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`);
-      return text;
-    } catch (error) {
-      logRequest(requestId, `Gemini CLI failed after ${formatDurationNs(startedAt)}`, {
-        code: error?.code,
-        message: error?.message
-      });
-      throw mapCliExecutionError(error, error.stdout || '', error.stderr || '');
-    }
-  });
+    const parseStartedAt = nowNs();
+    const text = parseClaudeJsonOutput(stdout);
+    logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
+      responseLength: text.length
+    });
+    logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`);
+    return text;
+  } catch (error) {
+    logRequest(requestId, `Claude Code failed after ${formatDurationNs(startedAt)}`, {
+      code: error?.code,
+      message: error?.message
+    });
+    throw mapCliExecutionError(error, error.stdout || '', error.stderr || '');
+  }
 }
 
 function readJsonBody(req) {
@@ -428,8 +388,8 @@ function readJsonBody(req) {
 }
 
 function createBridgeServer({
-  invokeReply = invokeGeminiCli,
-  getStatus = getGeminiStatus
+  invokeReply = invokeClaudeCode,
+  getStatus = getClaudeStatus
 } = {}) {
   return http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
@@ -441,11 +401,11 @@ function createBridgeServer({
 
     try {
       if (req.method === 'GET' && req.url === '/health') {
-        const gemini = await getStatus();
+        const claude = await getStatus();
         sendJson(res, 200, {
           ok: true,
           model: DEFAULT_MODEL,
-          gemini
+          claude
         });
         return;
       }
@@ -515,7 +475,7 @@ function createBridgeServer({
 }
 
 async function startBridgeServer() {
-  await ensureGeminiRuntime();
+  await ensureBridgeWorkdir();
   await writeFile(TRACE_LOG_PATH, '', 'utf8');
   const server = createBridgeServer();
   await new Promise((resolve) => server.listen(DEFAULT_PORT, '127.0.0.1', resolve));
@@ -524,7 +484,7 @@ async function startBridgeServer() {
     model: DEFAULT_MODEL,
     traceLogPath: TRACE_LOG_PATH
   });
-  console.log(`Gemini CLI bridge listening on http://127.0.0.1:${DEFAULT_PORT}`);
+  console.log(`Claude Code bridge listening on http://127.0.0.1:${DEFAULT_PORT}`);
   return server;
 }
 
@@ -537,27 +497,25 @@ if (isDirectRun) {
 }
 
 export {
-  BRIDGE_HOME_ROOT,
-  BRIDGE_ROOT,
-  BRIDGE_SYSTEM_PROMPT_PATH,
   BRIDGE_WORKDIR,
   BridgeError,
-  DEFAULT_GEMINI_BIN,
+  CLAUDE_BRIDGE_SETTINGS,
+  DEFAULT_CLAUDE_BIN,
   DEFAULT_MODEL,
   DEFAULT_PORT,
   DEFAULT_TIMEOUT_MS,
   TRACE_LOG_PATH,
   appendTraceLog,
-  buildBridgeSystemPrompt,
+  buildClaudeExecInvocation,
   buildCliPrompt,
-  buildGeminiExecInvocation,
-  buildMinimalSettings,
   createBridgeServer,
-  ensureGeminiRuntime,
+  ensureBridgeWorkdir,
   extractFirstJsonObject,
-  getGeminiStatus,
-  invokeGeminiCli,
+  getClaudeStatus,
+  invokeClaudeCode,
   mapCliExecutionError,
-  parseCliJsonOutput,
+  parseClaudeAuthStatus,
+  parseClaudeJsonOutput,
+  PROMPT_DUMP_PATH,
   startBridgeServer
 };

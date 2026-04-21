@@ -1,6 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { BridgeError, buildCliPrompt, buildMinimalSettings, createBridgeServer, extractFirstJsonObject, parseCliJsonOutput } from '../bridge/gemini-cli-bridge.js';
+import {
+  BridgeError,
+  buildBridgeSystemPrompt,
+  buildCliPrompt,
+  buildGeminiExecInvocation,
+  buildMinimalSettings,
+  createBridgeServer,
+  extractFirstJsonObject,
+  parseCliJsonOutput
+} from '../bridge/gemini-cli-bridge.js';
 
 async function withServer(server, fn) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -28,63 +37,76 @@ describe('parseCliJsonOutput', () => {
       extractFirstJsonObject(text),
       '{\n  "session_id": "a",\n  "response": "hello",\n  "stats": {}\n}'
     );
-  });
-
-  it('extracts the text response from Gemini CLI json output', () => {
-    assert.equal(
-      parseCliJsonOutput(JSON.stringify({ session_id: 'a', response: 'hello', stats: {} })),
-      'hello'
-    );
-  });
-
-  it('parses noisy stdout around the JSON response', () => {
-    const stdout = [
-      'Loaded cached credentials.',
-      '{',
-      '  "session_id": "a",',
-      '  "response": "hello",',
-      '  "stats": {}',
-      '}',
-      'Hook execution complete'
-    ].join('\n');
-
-    assert.equal(parseCliJsonOutput(stdout), 'hello');
-  });
-
-  it('throws when Gemini CLI returns an empty response', () => {
-    assert.throws(
-      () => parseCliJsonOutput(JSON.stringify({ session_id: 'a', response: '   ', stats: {} })),
-      /no text response/
-    );
-  });
-});
-
-describe('buildCliPrompt', () => {
-  it('includes system prompt, poster handle, and thread context', () => {
-    const prompt = buildCliPrompt('system prompt', 'third tweet', {
-      posterHandle: '@someone',
-      threadTweets: ['first tweet', 'second tweet', 'third tweet']
-    });
-
-    assert.ok(prompt.includes('system prompt'));
-    assert.ok(prompt.includes('by @someone'));
-    assert.ok(prompt.includes('first tweet'));
-    assert.ok(prompt.includes('third tweet'));
+    assert.equal(parseCliJsonOutput(text), 'hello');
   });
 });
 
 describe('buildMinimalSettings', () => {
-  it('keeps auth selection but strips hooks', () => {
+  it('produces the bridge-specific minimal runtime config', () => {
     const settings = buildMinimalSettings({
-      general: { previewFeatures: true },
-      hooks: { SessionStart: [{ hooks: [{ command: 'slow-hook' }] }] },
       security: { auth: { selectedType: 'oauth-personal' } }
     });
 
     assert.deepEqual(settings, {
-      general: { previewFeatures: true },
-      security: { auth: { selectedType: 'oauth-personal' } }
+      hooksConfig: { enabled: false },
+      skills: { enabled: false },
+      useWriteTodos: false,
+      context: {
+        fileName: '__XGA_DISABLED_CONTEXT__.md',
+        includeDirectoryTree: false,
+        discoveryMaxDirs: 0,
+        memoryBoundaryMarkers: [],
+        includeDirectories: [],
+        loadMemoryFromIncludeDirectories: false
+      },
+      security: {
+        auth: { selectedType: 'oauth-personal' }
+      }
     });
+  });
+});
+
+describe('buildBridgeSystemPrompt', () => {
+  it('creates a minimal bridge prompt', () => {
+    assert.match(buildBridgeSystemPrompt(), /tiny headless reply engine/i);
+  });
+});
+
+describe('buildGeminiExecInvocation', () => {
+  it('injects isolated runtime paths and prompt args', () => {
+    const invocation = buildGeminiExecInvocation({
+      geminiBin: 'gemini',
+      model: 'flash-lite',
+      prompt: 'prompt body',
+      runtime: {
+        homeRoot: '/tmp/xga-home',
+        workdir: '/tmp/xga-workdir',
+        systemPromptPath: '/tmp/xga-system.md'
+      },
+      timeoutMs: 12000
+    });
+
+    assert.deepEqual(invocation.args, [
+      '--model',
+      'flash-lite',
+      '--prompt',
+      'prompt body',
+      '--sandbox=false',
+      '--output-format',
+      'json'
+    ]);
+    assert.equal(invocation.options.cwd, '/tmp/xga-workdir');
+    assert.equal(invocation.options.env.GEMINI_CLI_HOME, '/tmp/xga-home');
+    assert.equal(invocation.options.env.GEMINI_SYSTEM_MD, '/tmp/xga-system.md');
+    assert.equal(invocation.options.timeout, 12000);
+  });
+});
+
+describe('buildCliPrompt', () => {
+  it('combines system and user prompts', () => {
+    const prompt = buildCliPrompt('system prompt', 'user prompt');
+    assert.match(prompt, /System instructions:/);
+    assert.match(prompt, /user prompt/);
   });
 });
 
@@ -99,15 +121,14 @@ describe('createBridgeServer', () => {
       const data = await res.json();
       assert.equal(res.status, 200);
       assert.equal(data.gemini.installed, true);
-      assert.equal(data.gemini.version, '0.27.3');
     });
   });
 
-  it('builds a reply through the injected CLI handler', async () => {
-    let requestPayload;
+  it('passes userPrompt and timeoutMs to the injected handler', async () => {
+    let payload;
     const server = createBridgeServer({
-      invokeReply: async (payload) => {
-        requestPayload = payload;
+      invokeReply: async (request) => {
+        payload = request;
         return 'reply text';
       }
     });
@@ -118,17 +139,16 @@ describe('createBridgeServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemPrompt: 'system prompt',
-          tweetText: 'tweet body',
-          context: { posterHandle: '@a', threadTweets: ['tweet body'] },
-          model: 'gemini-3.1-flash-lite-preview'
+          userPrompt: 'user prompt',
+          model: 'flash-lite',
+          timeoutMs: 9000
         })
       });
       const data = await res.json();
       assert.equal(res.status, 200);
       assert.equal(data.text, 'reply text');
-      assert.equal(requestPayload.systemPrompt, 'system prompt');
-      assert.equal(requestPayload.tweetText, 'tweet body');
-      assert.equal(requestPayload.model, 'gemini-3.1-flash-lite-preview');
+      assert.equal(payload.userPrompt, 'user prompt');
+      assert.equal(payload.timeoutMs, 9000);
     });
   });
 
@@ -145,32 +165,12 @@ describe('createBridgeServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemPrompt: 'system prompt',
-          tweetText: 'tweet body'
+          userPrompt: 'user prompt'
         })
       });
       const data = await res.json();
       assert.equal(res.status, 503);
       assert.equal(data.code, 'gemini_auth_required');
-    });
-  });
-
-  it('accepts external trace events', async () => {
-    const server = createBridgeServer();
-
-    await withServer(server, async (origin) => {
-      const res = await fetch(`${origin}/trace`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'xga-trace',
-          source: 'bg',
-          message: 'Loaded settings in 1ms',
-          extra: { activeModel: 'gemini-cli-local' }
-        })
-      });
-      const data = await res.json();
-      assert.equal(res.status, 202);
-      assert.equal(data.ok, true);
     });
   });
 });

@@ -81,6 +81,22 @@ header h1 {
   letter-spacing: 0.5px;
 }
 
+.toggle-row {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  color: #e7e9ea !important;
+  cursor: pointer;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #1d9bf0;
+}
+
 .field input,
 .field select,
 .field textarea {

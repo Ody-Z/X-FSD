@@ -3,6 +3,8 @@
   "type": "module",
   "scripts": {
     "bridge": "node bridge/gemini-cli-bridge.js",
+    "bridge:gemini": "node bridge/gemini-cli-bridge.js",
+    "bridge:claude": "node bridge/claude-code-bridge.js",
     "test": "node --test tests/*.test.js"
   }
 }

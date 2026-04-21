@@ -1,4 +1,4 @@
-import { GEMINI_CLI_LOCAL_MODEL, TONE_DEFAULTS } from '../lib/api.js';
+import { CLAUDE_CODE_LOCAL_MODEL, GEMINI_CLI_LOCAL_MODEL, TONE_DEFAULTS } from '../lib/api.js';
 
 const DB_NAME = 'xGrowthFS';
 const STORE_NAME = 'dirHandles';
@@ -68,7 +68,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 async function loadSettings() {
   const settings = await StorageHelper.getSettings();
   document.getElementById('username').value = settings.username || '';
-  document.getElementById('activeModel').value = settings.activeModel || 'claude-haiku';
+  document.getElementById('activeModel').value = settings.activeModel || 'gemini-cli-local';
+  document.getElementById('autoDraftsEnabled').checked = settings.autoDraftsEnabled !== false;
   document.getElementById('anthropicApiKey').value = settings.anthropicApiKey || '';
   document.getElementById('moonshotApiKey').value = settings.moonshotApiKey || '';
   document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
@@ -84,25 +85,40 @@ async function loadSettings() {
 function updateModelHintAndFields(activeModel) {
   const hint = document.getElementById('modelHint');
   const geminiApiKey = document.getElementById('geminiApiKey');
+  const anthropicApiKey = document.getElementById('anthropicApiKey');
   const anthropicField = document.getElementById('anthropicApiKeyField');
   const moonshotKeyField = document.getElementById('moonshotApiKeyField');
   const geminiKeyField = document.getElementById('geminiApiKeyField');
   const moonshotEndpointField = document.getElementById('moonshotEndpointField');
+  const isGeminiLocal = activeModel === GEMINI_CLI_LOCAL_MODEL;
+  const isClaudeLocal = activeModel === CLAUDE_CODE_LOCAL_MODEL;
 
   anthropicField.classList.toggle('hidden', activeModel !== 'claude-haiku');
   moonshotKeyField.classList.toggle('hidden', activeModel !== 'kimi-k2.5');
   moonshotEndpointField.classList.toggle('hidden', activeModel !== 'kimi-k2.5');
-  geminiKeyField.classList.toggle('hidden', activeModel === GEMINI_CLI_LOCAL_MODEL || activeModel !== 'gemini-3.1-flash-lite-preview');
+  geminiKeyField.classList.toggle('hidden', isGeminiLocal || activeModel !== 'gemini-3.1-flash-lite-preview');
 
-  if (activeModel === GEMINI_CLI_LOCAL_MODEL) {
+  if (isGeminiLocal) {
     hint.textContent = 'Gemini CLI Local uses your local bridge. Start it first with `npm run bridge`. Gemini API Key is ignored in this mode.';
     geminiApiKey.disabled = true;
     geminiApiKey.placeholder = 'Not used in Gemini CLI Local mode';
+    anthropicApiKey.disabled = false;
+    anthropicApiKey.placeholder = 'sk-ant-...';
     return;
   }
 
   geminiApiKey.disabled = false;
   geminiApiKey.placeholder = 'AIza...';
+
+  if (isClaudeLocal) {
+    hint.textContent = 'Claude Code Haiku Local uses your local Claude Code login via bridge. Start it first with `npm run bridge:claude`. Anthropic API Key is ignored in this mode.';
+    anthropicApiKey.disabled = true;
+    anthropicApiKey.placeholder = 'Not used in Claude Code Local mode';
+    return;
+  }
+
+  anthropicApiKey.disabled = false;
+  anthropicApiKey.placeholder = 'sk-ant-...';
 
   if (activeModel === 'gemini-3.1-flash-lite-preview') {
     hint.textContent = 'Gemini HTTP mode uses your Gemini API Key.';
@@ -144,6 +160,7 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
     await StorageHelper.saveSettings({
       username: document.getElementById('username').value.replace('@', ''),
       activeModel: document.getElementById('activeModel').value,
+      autoDraftsEnabled: document.getElementById('autoDraftsEnabled').checked,
       anthropicApiKey: document.getElementById('anthropicApiKey').value,
       moonshotApiKey: document.getElementById('moonshotApiKey').value,
       geminiApiKey: document.getElementById('geminiApiKey').value,
