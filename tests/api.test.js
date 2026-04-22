@@ -51,6 +51,21 @@ describe('buildUserMessage', () => {
     assert.ok(message.includes('tweet4'));
     assert.ok(message.includes('tweet5'));
   });
+
+  it('includes quoted post context when present', () => {
+    const message = buildUserMessage('Many such cases.', {
+      posterHandle: '@pmarca',
+      quotedTweet: {
+        posterHandle: '@bhorowitz',
+        text: 'They put my father R.I.P. on a hate group list and nearly destroyed his non-profit.'
+      },
+      threadTweets: ['Many such cases.']
+    });
+
+    assert.match(message, /Quoted post by @bhorowitz/);
+    assert.match(message, /hate group list/);
+    assert.match(message, /Reply to this post by @pmarca/);
+  });
 });
 
 describe('adaptive draft prompts', () => {
@@ -122,6 +137,18 @@ describe('detectAutoDraftSkipReason', () => {
   it('keeps substantive posts', () => {
     assert.equal(
       detectAutoDraftSkipReason('Interesting tradeoff: lower latency models often need stricter prompt contracts.'),
+      ''
+    );
+  });
+
+  it('keeps short quote tweets when the quoted post adds context', () => {
+    assert.equal(
+      detectAutoDraftSkipReason('Many such cases.', {
+        quotedTweet: {
+          posterHandle: '@bhorowitz',
+          text: 'They put my father R.I.P. on a hate group list and nearly destroyed his non-profit.'
+        }
+      }),
       ''
     );
   });

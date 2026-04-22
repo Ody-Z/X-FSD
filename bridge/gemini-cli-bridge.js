@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
 const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '60000');
+const DEFAULT_CONCURRENCY = Number(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '3');
 const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
 const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
 const TRACE_LOG_PATH = process.env.XGA_GEMINI_TRACE_LOG || '/tmp/xga-gemini-bridge.log';
@@ -23,11 +24,13 @@ const BRIDGE_WORKDIR = path.join(BRIDGE_ROOT, 'workdir');
 const BRIDGE_SYSTEM_PROMPT_PATH = path.join(BRIDGE_ROOT, 'system.md');
 
 let runtimePromise = null;
-let queueTail = Promise.resolve();
+let activeInvocationCount = 0;
+const pendingInvocations = [];
 let geminiStatusCache = {
   value: null,
   expiresAt: 0
 };
+const TIMEOUT_RETRY_LIMIT = 1;
 
 function nowNs() {
   return process.hrtime.bigint();
@@ -36,6 +39,16 @@ function nowNs() {
 function formatDurationNs(startedAtNs) {
   const elapsedMs = Number(process.hrtime.bigint() - startedAtNs) / 1e6;
   return `${Math.round(elapsedMs)}ms`;
+}
+
+function formatDurationMs(durationMs) {
+  return `${Math.round(durationMs)}ms`;
+}
+
+function getOutputTail(value, maxLength = 400) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return '';
+  return text.length <= maxLength ? text : text.slice(-maxLength);
 }
 
 function appendTraceLog(entry) {
@@ -311,9 +324,29 @@ function buildGeminiExecInvocation({
 }
 
 function queueInvocation(task) {
-  const run = queueTail.then(task, task);
-  queueTail = run.catch(() => {});
-  return run;
+  return new Promise((resolve, reject) => {
+    const enqueuedAt = Date.now();
+
+    const run = () => {
+      const queueWaitMs = Date.now() - enqueuedAt;
+      activeInvocationCount += 1;
+      Promise.resolve()
+        .then(() => task({ queueWaitMs }))
+        .then(resolve, reject)
+        .finally(() => {
+          activeInvocationCount = Math.max(0, activeInvocationCount - 1);
+          const next = pendingInvocations.shift();
+          if (next) next();
+        });
+    };
+
+    if (activeInvocationCount < DEFAULT_CONCURRENCY) {
+      run();
+      return;
+    }
+
+    pendingInvocations.push(run);
+  });
 }
 
 async function getGeminiStatus({ geminiBin = DEFAULT_GEMINI_BIN } = {}) {
@@ -377,33 +410,69 @@ async function invokeGeminiCli({
     timeoutMs
   });
 
-  return queueInvocation(async () => {
-    try {
-      const execStartedAt = nowNs();
-      const invocation = buildGeminiExecInvocation({
-        geminiBin,
-        model,
-        prompt,
-        runtime,
-        timeoutMs
+  return queueInvocation(async ({ queueWaitMs }) => {
+    if (queueWaitMs > 0) {
+      logRequest(requestId, `Waited ${formatDurationMs(queueWaitMs)} in bridge queue`, {
+        concurrency: DEFAULT_CONCURRENCY,
+        activeInvocationCount
       });
-      const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
-      logRequest(requestId, `Gemini CLI process finished in ${formatDurationNs(execStartedAt)}`);
-
-      const parseStartedAt = nowNs();
-      const text = parseCliJsonOutput(stdout);
-      logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
-        responseLength: text.length
-      });
-      logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`);
-      return text;
-    } catch (error) {
-      logRequest(requestId, `Gemini CLI failed after ${formatDurationNs(startedAt)}`, {
-        code: error?.code,
-        message: error?.message
-      });
-      throw mapCliExecutionError(error, error.stdout || '', error.stderr || '');
     }
+
+    let lastMappedError = null;
+
+    for (let attempt = 1; attempt <= TIMEOUT_RETRY_LIMIT + 1; attempt += 1) {
+      try {
+        const execStartedAt = nowNs();
+        const invocation = buildGeminiExecInvocation({
+          geminiBin,
+          model,
+          prompt,
+          runtime,
+          timeoutMs
+        });
+        const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
+        logRequest(requestId, `Gemini CLI process finished in ${formatDurationNs(execStartedAt)}`, {
+          attempt
+        });
+
+        const parseStartedAt = nowNs();
+        const text = parseCliJsonOutput(stdout);
+        logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
+          attempt,
+          responseLength: text.length
+        });
+        logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`, {
+          attempt
+        });
+        return text;
+      } catch (error) {
+        const stdoutTail = getOutputTail(error?.stdout);
+        const stderrTail = getOutputTail(error?.stderr);
+        const mappedError = mapCliExecutionError(error, error?.stdout || '', error?.stderr || '');
+        lastMappedError = mappedError;
+
+        logRequest(requestId, `Gemini CLI failed after ${formatDurationNs(startedAt)}`, {
+          attempt,
+          code: error?.code,
+          message: error?.message,
+          mappedCode: mappedError.code,
+          stdoutTail,
+          stderrTail
+        });
+
+        if (mappedError.code === 'gemini_timeout' && attempt <= TIMEOUT_RETRY_LIMIT) {
+          logRequest(requestId, 'Retrying Gemini CLI after timeout', {
+            attempt,
+            nextAttempt: attempt + 1
+          });
+          continue;
+        }
+
+        throw mappedError;
+      }
+    }
+
+    throw lastMappedError || new BridgeError('cli_failure', 'Gemini CLI failed to generate a reply.', 502);
   });
 }
 
@@ -522,6 +591,7 @@ async function startBridgeServer() {
   logRequest('system', 'Bridge started', {
     port: DEFAULT_PORT,
     model: DEFAULT_MODEL,
+    concurrency: DEFAULT_CONCURRENCY,
     traceLogPath: TRACE_LOG_PATH
   });
   console.log(`Gemini CLI bridge listening on http://127.0.0.1:${DEFAULT_PORT}`);
@@ -543,6 +613,7 @@ export {
   BRIDGE_WORKDIR,
   BridgeError,
   DEFAULT_GEMINI_BIN,
+  DEFAULT_CONCURRENCY,
   DEFAULT_MODEL,
   DEFAULT_PORT,
   DEFAULT_TIMEOUT_MS,

@@ -37,12 +37,53 @@
   display: block;
 }
 
+.xga-drawer-root.overflow-active {
+  width: min(300px, calc(100vw - 24px));
+  max-height: min(42vh, 420px);
+}
+
 .xga-drawer-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
   max-height: inherit;
   overflow-y: auto;
+}
+
+.xga-overflow-stack {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: inherit;
+}
+
+.xga-overflow-header {
+  padding: 4px 4px 0;
+}
+
+.xga-overflow-title {
+  color: var(--xga-text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.xga-overflow-hint {
+  margin-top: 4px;
+  color: var(--xga-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.xga-overflow-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: inherit;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .xga-card {
@@ -63,6 +104,64 @@
 .xga-card.compact {
   position: relative;
   width: 100%;
+}
+
+.xga-stack-card {
+  width: 100%;
+  border: 1px solid var(--xga-border);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(29, 155, 240, 0.12), transparent 42%),
+    linear-gradient(180deg, rgba(11, 16, 22, 0.98), rgba(8, 12, 16, 0.92));
+  color: var(--xga-text);
+  padding: 12px;
+  text-align: left;
+  box-shadow: 0 14px 30px var(--xga-shadow);
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.xga-stack-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.xga-stack-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.xga-stack-card-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xga-stack-card-preview {
+  color: var(--xga-text);
+  font-size: 13px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.xga-stack-card-meta {
+  margin-top: 8px;
+  color: var(--xga-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .xga-card-header {

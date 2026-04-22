@@ -15,7 +15,10 @@
     news: 'News',
     personal: 'Personal'
   };
+  const AUTO_DRAFT_CONCURRENCY = 3;
+  const INLINE_MAIN_CARD_COUNT = 2;
   const CARD_WIDTH = 320;
+  const INLINE_CARD_GAP = 12;
   const LOOKAHEAD_COUNT = 6;
   const MAX_TRACKED_POSTS = 48;
   const LOG_PREFIX = '[XGA]';
@@ -26,7 +29,9 @@
     priorityIds: [],
     overlayRoot: null,
     drawerRoot: null,
-    queueBusy: false,
+    activeGenerationCount: 0,
+    inFlightPostIds: new Set(),
+    focusedPostId: '',
     refreshScheduled: false,
     interactionLockedUntil: 0
   };
@@ -48,7 +53,7 @@
   }
 
   function isVisibleRect(rect) {
-    return rect.bottom > 72 && rect.top < window.innerHeight - 24;
+    return rect.bottom > 24 && rect.top < window.innerHeight - 24;
   }
 
   function findTweetId(article) {
@@ -59,17 +64,7 @@
     return match ? match[1] : '';
   }
 
-  function findTweetText(article) {
-    const el = article.querySelector('[data-testid="tweetText"]') ||
-      article.querySelector('[lang]') ||
-      article.querySelector('div[dir="auto"]');
-    return normalizeWhitespace(el?.innerText || '');
-  }
-
-  function findPosterHandle(article) {
-    const userName = article.querySelector('[data-testid="User-Name"]');
-    if (!userName) return '';
-
+  function findUserNameHandle(userName) {
     const links = Array.from(userName.querySelectorAll('a[href^="/"]'));
     for (const link of links) {
       const href = link.getAttribute('href') || '';
@@ -80,33 +75,154 @@
     return '';
   }
 
+  function findTweetTextEntries(article) {
+    const entries = [];
+    const seenTexts = new Set();
+    const nodes = Array.from(article.querySelectorAll('[data-testid="tweetText"]'));
+
+    if (nodes.length === 0) {
+      const fallback = article.querySelector('[lang]') || article.querySelector('div[dir="auto"]');
+      const text = normalizeWhitespace(fallback?.innerText || '');
+      if (text) entries.push({ text, element: fallback });
+      return entries;
+    }
+
+    for (const node of nodes) {
+      const text = normalizeWhitespace(node.innerText || '');
+      if (!text || seenTexts.has(text)) continue;
+      seenTexts.add(text);
+      entries.push({ text, element: node });
+    }
+
+    return entries;
+  }
+
+  function findPosterHandles(article) {
+    return Array.from(article.querySelectorAll('[data-testid="User-Name"]'))
+      .map((userName) => findUserNameHandle(userName))
+      .filter(Boolean);
+  }
+
+  function findTweetText(article) {
+    return findTweetTextEntries(article)[0]?.text || '';
+  }
+
+  function findPosterHandle(article) {
+    return findPosterHandles(article)[0] || '';
+  }
+
+  function findQuotedTweet(article) {
+    const textEntries = findTweetTextEntries(article);
+    if (textEntries.length < 2) return null;
+
+    const handles = findPosterHandles(article);
+    for (let index = 1; index < textEntries.length; index += 1) {
+      const text = textEntries[index]?.text;
+      if (!text) continue;
+      return {
+        text,
+        posterHandle: handles[index] || ''
+      };
+    }
+
+    return null;
+  }
+
   function findReplyButton(article) {
     return article.querySelector('button[data-testid="reply"]') ||
       article.querySelector('[data-testid="reply"]');
   }
 
+  function getPageContext() {
+    const pathname = window.location.pathname || '';
+    const statusMatch = pathname.match(/\/status\/(\d+)/);
+    if (statusMatch) {
+      return {
+        kind: 'status-detail',
+        postId: statusMatch[1]
+      };
+    }
+
+    if (/^\/home\/?$/.test(pathname)) {
+      return {
+        kind: 'home-feed',
+        postId: ''
+      };
+    }
+
+    return {
+      kind: 'unsupported',
+      postId: ''
+    };
+  }
+
+  function isAutoDraftView(pageContext = getPageContext()) {
+    return pageContext.kind === 'home-feed';
+  }
+
+  function getCandidatePreferenceScore(item) {
+    let score = 0;
+    if (item.article.closest('[role="dialog"]')) score += 4;
+    if (findReplyButton(item.article)) score += 2;
+    if (isVisibleRect(item.rect)) score += 1;
+    return score;
+  }
+
+  function dedupeCandidateArticles(items) {
+    const deduped = new Map();
+
+    for (const item of items) {
+      const existing = deduped.get(item.postId);
+      if (!existing) {
+        deduped.set(item.postId, item);
+        continue;
+      }
+
+      const existingScore = getCandidatePreferenceScore(existing);
+      const nextScore = getCandidatePreferenceScore(item);
+      if (nextScore > existingScore || (nextScore === existingScore && item.rect.top < existing.rect.top)) {
+        deduped.set(item.postId, item);
+      }
+    }
+
+    return Array.from(deduped.values()).sort((a, b) => a.rect.top - b.rect.top);
+  }
+
   function collectCandidateArticles() {
-    return Array.from(document.querySelectorAll('article'))
+    const pageContext = getPageContext();
+    const items = Array.from(document.querySelectorAll('article'))
       .map((article) => {
         const postId = findTweetId(article);
         const text = findTweetText(article);
-        if (!postId || !text) return null;
+        const quotedTweet = findQuotedTweet(article);
+        if (!postId || (!text && !quotedTweet?.text)) return null;
 
         const rect = article.getBoundingClientRect();
+        const posterHandle = findPosterHandle(article);
         return {
           postId,
           article,
           text,
           rect,
-          posterHandle: findPosterHandle(article),
+          posterHandle,
           context: {
-            posterHandle: findPosterHandle(article),
+            posterHandle,
+            quotedTweet,
             threadTweets: [text]
           }
         };
       })
-      .filter(Boolean)
-      .sort((a, b) => a.rect.top - b.rect.top);
+      .filter(Boolean);
+
+    if (pageContext.kind === 'status-detail') {
+      return dedupeCandidateArticles(items.filter((item) => item.postId === pageContext.postId));
+    }
+
+    if (pageContext.kind === 'home-feed') {
+      return dedupeCandidateArticles(items);
+    }
+
+    return [];
   }
 
   function ensureUiRoots() {
@@ -157,7 +273,7 @@
 
   function isUserInteractingWithCard() {
     const active = document.activeElement;
-    return Date.now() < state.interactionLockedUntil || Boolean(active && active.closest('.xga-card'));
+    return Date.now() < state.interactionLockedUntil || Boolean(active && active.closest('.xga-card, .xga-stack-card'));
   }
 
   function createDraftRecord(item) {
@@ -178,23 +294,15 @@
     };
   }
 
+  function isLockedDraftStatus(status) {
+    return ['sending', 'sent'].includes(status);
+  }
+
   function updateDraftRecord(record, item) {
     record.article = item.article;
     record.posterHandle = item.posterHandle;
     record.context = item.context;
     record.lastSeenAt = Date.now();
-
-    if (record.text !== item.text && !['sending', 'sent'].includes(record.status)) {
-      record.text = item.text;
-      record.autoText = '';
-      record.editedText = '';
-      record.strategyType = null;
-      record.baseTone = null;
-      record.error = '';
-      record.status = 'idle';
-      return;
-    }
-
     record.text = item.text;
   }
 
@@ -224,6 +332,7 @@
   }
 
   function computePriority(items) {
+    const canAutoQueue = isAutoDraftView();
     const viewportMid = window.innerHeight / 2;
     const visible = items.filter((item) => isVisibleRect(item.rect));
     const lookahead = items
@@ -252,7 +361,11 @@
     for (const postId of priority) {
       const record = state.drafts.get(postId);
       if (!record) continue;
-      if (record.status === 'idle') record.status = 'queued';
+      if (canAutoQueue) {
+        if (record.status === 'idle') record.status = 'queued';
+      } else if (record.status === 'queued') {
+        record.status = 'idle';
+      }
     }
   }
 
@@ -322,6 +435,12 @@
       onClick();
     });
     return button;
+  }
+
+  function focusDraft(postId) {
+    state.focusedPostId = postId;
+    state.interactionLockedUntil = Date.now() + 5000;
+    render(collectCandidateArticles());
   }
 
   function buildCard(record, compact = false) {
@@ -417,34 +536,175 @@
     return card;
   }
 
+  function buildOverflowStackCard(record) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'xga-stack-card';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      focusDraft(record.postId);
+    });
+
+    const header = document.createElement('div');
+    header.className = 'xga-stack-card-header';
+
+    const title = document.createElement('div');
+    title.className = 'xga-stack-card-title';
+    title.textContent = record.posterHandle || 'Post draft';
+
+    const badge = document.createElement('span');
+    badge.className = `xga-card-badge ${record.status}`;
+    badge.textContent = getStatusLabel(record);
+
+    header.appendChild(title);
+    header.appendChild(badge);
+    button.appendChild(header);
+
+    const preview = document.createElement('div');
+    preview.className = 'xga-stack-card-preview';
+    preview.textContent = record.text || 'No post text available.';
+    button.appendChild(preview);
+
+    const meta = document.createElement('div');
+    meta.className = 'xga-stack-card-meta';
+    if (record.status === 'ready') {
+      meta.textContent = `${getStrategyLabel(record)} draft ready`;
+    } else if (record.status === 'generating') {
+      meta.textContent = 'Generating draft...';
+    } else if (record.error) {
+      meta.textContent = record.error;
+    } else if (record.status === 'queued') {
+      meta.textContent = 'Waiting in queue...';
+    } else {
+      meta.textContent = 'Tap to open this draft.';
+    }
+    button.appendChild(meta);
+
+    return button;
+  }
+
+  function getInlineLayout(items) {
+    const visibleItems = items.filter((item) => state.visibleIds.includes(item.postId));
+    const visibleMap = new Map(visibleItems.map((item) => [item.postId, item]));
+
+    if (state.focusedPostId && !visibleMap.has(state.focusedPostId)) {
+      state.focusedPostId = '';
+    }
+
+    const ranked = [];
+    if (state.focusedPostId) {
+      const focusedItem = visibleMap.get(state.focusedPostId);
+      if (focusedItem) ranked.push(focusedItem);
+    }
+
+    for (const postId of state.priorityIds) {
+      const item = visibleMap.get(postId);
+      if (!item || ranked.some((entry) => entry.postId === postId)) continue;
+      ranked.push(item);
+    }
+
+    const mainItems = ranked
+      .slice(0, INLINE_MAIN_CARD_COUNT)
+      .sort((a, b) => a.rect.top - b.rect.top);
+    const mainIds = new Set(mainItems.map((item) => item.postId));
+    const overflowItems = visibleItems.filter((item) => !mainIds.has(item.postId));
+
+    return {
+      mainItems,
+      overflowItems
+    };
+  }
+
+  function computeInlineCardOpacity(rect) {
+    if (rect.bottom <= 72) return 0;
+    if (rect.top >= 72) return 1;
+    return Math.max(0, Math.min(1, (rect.bottom - 72) / 120));
+  }
+
+  function renderOverflowStack(items) {
+    state.drawerRoot.innerHTML = '';
+    if (items.length === 0) {
+      state.drawerRoot.classList.remove('active', 'overflow-active');
+      return;
+    }
+
+    state.drawerRoot.classList.add('active', 'overflow-active');
+
+    const stack = document.createElement('section');
+    stack.className = 'xga-overflow-stack';
+
+    const header = document.createElement('div');
+    header.className = 'xga-overflow-header';
+
+    const title = document.createElement('div');
+    title.className = 'xga-overflow-title';
+    title.textContent = `More Drafts (${items.length})`;
+
+    const hint = document.createElement('div');
+    hint.className = 'xga-overflow-hint';
+    hint.textContent = 'Tap to swap into the main card area.';
+
+    header.appendChild(title);
+    header.appendChild(hint);
+    stack.appendChild(header);
+
+    const list = document.createElement('div');
+    list.className = 'xga-overflow-list';
+
+    for (const item of items) {
+      const record = state.drafts.get(item.postId);
+      if (!record) continue;
+      list.appendChild(buildOverflowStackCard(record));
+    }
+
+    stack.appendChild(list);
+    state.drawerRoot.appendChild(stack);
+  }
+
   function renderInlineCards(items) {
     state.overlayRoot.innerHTML = '';
     state.overlayRoot.classList.add('active');
-    state.drawerRoot.innerHTML = '';
-    state.drawerRoot.classList.remove('active');
+    const { mainItems, overflowItems } = getInlineLayout(items);
+    let previousBottom = Number.NEGATIVE_INFINITY;
 
-    const visibleItems = items.filter((item) => state.visibleIds.includes(item.postId));
-    let previousBottom = 24;
-
-    for (const item of visibleItems) {
+    for (const item of mainItems) {
       const record = state.drafts.get(item.postId);
       if (!record) continue;
 
       const card = buildCard(record, false);
-      const desiredTop = Math.max(24, item.rect.top);
-      const top = Math.max(desiredTop, previousBottom + 12);
+      const opacity = computeInlineCardOpacity(item.rect);
+      if (opacity <= 0.02) continue;
+
+      const anchoredTop = item.rect.top;
       const left = Math.min(window.innerWidth - CARD_WIDTH - 20, item.rect.right + 20);
+      card.addEventListener('pointerdown', () => {
+        state.focusedPostId = record.postId;
+      }, true);
+      card.addEventListener('focusin', () => {
+        state.focusedPostId = record.postId;
+      }, true);
       card.style.left = `${left}px`;
-      card.style.top = `${top}px`;
+      card.style.top = `${anchoredTop}px`;
+      card.style.opacity = `${opacity}`;
+      card.style.pointerEvents = opacity < 0.35 ? 'none' : 'auto';
       state.overlayRoot.appendChild(card);
-      previousBottom = top + card.offsetHeight;
+
+      const resolvedTop = Math.max(anchoredTop, previousBottom + INLINE_CARD_GAP);
+      if (resolvedTop !== anchoredTop) {
+        card.style.top = `${resolvedTop}px`;
+      }
+      previousBottom = resolvedTop + card.offsetHeight;
     }
+
+    renderOverflowStack(overflowItems);
   }
 
   function renderDrawer(items) {
     state.overlayRoot.innerHTML = '';
     state.overlayRoot.classList.remove('active');
     state.drawerRoot.innerHTML = '';
+    state.drawerRoot.classList.remove('overflow-active');
     state.drawerRoot.classList.add('active');
 
     const list = document.createElement('div');
@@ -468,21 +728,25 @@
     renderInlineCards(items);
   }
 
-  function getQueuedRecord() {
+  function getQueuedRecords(limit = AUTO_DRAFT_CONCURRENCY - state.activeGenerationCount) {
+    if (limit <= 0 || !isAutoDraftView()) return [];
+
+    const records = [];
     for (const postId of state.priorityIds) {
       const record = state.drafts.get(postId);
-      if (record?.status === 'queued') return record;
+      if (!record || record.status !== 'queued' || state.inFlightPostIds.has(postId)) continue;
+      records.push(record);
+      if (records.length >= limit) break;
     }
-    return null;
+    return records;
   }
 
-  async function processQueue() {
-    if (state.queueBusy) return;
-    const record = getQueuedRecord();
-    if (!record) return;
-
-    state.queueBusy = true;
+  async function generateQueuedDraft(record) {
+    state.activeGenerationCount += 1;
+    state.inFlightPostIds.add(record.postId);
     record.status = 'generating';
+    const requestedText = record.text;
+    const requestedContext = record.context;
     render(collectCandidateArticles());
 
     try {
@@ -491,8 +755,8 @@
         mode: 'auto',
         phase: 'quick',
         provider: 'gemini-local',
-        tweetText: record.text,
-        context: record.context,
+        tweetText: requestedText,
+        context: requestedContext,
         requestId: createRequestId()
       });
 
@@ -514,7 +778,8 @@
       record.status = 'failed';
       record.error = formatGenerationError(error);
     } finally {
-      state.queueBusy = false;
+      state.inFlightPostIds.delete(record.postId);
+      state.activeGenerationCount = Math.max(0, state.activeGenerationCount - 1);
       const items = collectCandidateArticles();
       syncDraftsWithFeed(items);
       computePriority(items);
@@ -523,9 +788,19 @@
     }
   }
 
+  function processQueue() {
+    const records = getQueuedRecords();
+    if (records.length === 0) return;
+
+    for (const record of records) {
+      void generateQueuedDraft(record);
+    }
+  }
+
   function skipDraft(postId) {
     const record = state.drafts.get(postId);
     if (!record || record.status === 'sending') return;
+    if (state.focusedPostId === postId) state.focusedPostId = '';
     record.status = 'skipped';
     record.error = 'Skipped manually.';
     render(collectCandidateArticles());
@@ -533,10 +808,16 @@
 
   async function regenerateDraft(postId, provider) {
     const record = state.drafts.get(postId);
-    if (!record || record.status === 'sending') return;
+    if (!record || isLockedDraftStatus(record.status)) return;
 
+    state.focusedPostId = postId;
     record.status = 'generating';
     record.error = '';
+    const requestedText = record.text;
+    const requestedContext = record.context;
+    const currentDraft = record.editedText || record.autoText;
+    const baseToneHint = record.baseTone;
+    const strategyTypeHint = record.strategyType;
     render(collectCandidateArticles());
 
     try {
@@ -547,11 +828,11 @@
         tone: mode === 'auto' ? null : mode,
         phase: 'full',
         provider,
-        tweetText: record.text,
-        context: record.context,
-        currentDraft: record.editedText || record.autoText,
-        baseToneHint: record.baseTone,
-        strategyTypeHint: record.strategyType,
+        tweetText: requestedText,
+        context: requestedContext,
+        currentDraft,
+        baseToneHint,
+        strategyTypeHint,
         requestId: createRequestId()
       });
 
@@ -675,6 +956,7 @@
     const record = state.drafts.get(postId);
     if (!record || !record.article) return;
 
+    state.focusedPostId = postId;
     const finalText = normalizeWhitespace(record.editedText || record.autoText);
     if (!finalText) return;
 

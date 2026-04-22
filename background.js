@@ -23,6 +23,8 @@ const SETTINGS_CACHE = {
   value: null
 };
 const TONE_CACHE = new Map();
+const QUICK_DRAFT_TIMEOUT_MS = 90000;
+const FULL_DRAFT_TIMEOUT_MS = 120000;
 
 function nowMs() {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -116,7 +118,7 @@ async function getAdaptiveToneDataMap() {
 }
 
 function resolvePhaseTimeout(phase) {
-  return phase === DRAFT_PHASE_FULL ? 60000 : 60000;
+  return phase === DRAFT_PHASE_FULL ? FULL_DRAFT_TIMEOUT_MS : QUICK_DRAFT_TIMEOUT_MS;
 }
 
 async function generateWithGeminiLocal({
@@ -158,7 +160,7 @@ async function generateWithClaudeLocal({
 }
 
 async function handleGenerateAutoDraft(msg, requestId) {
-  const skipReason = detectAutoDraftSkipReason(msg.tweetText);
+  const skipReason = detectAutoDraftSkipReason(msg.tweetText, msg.context);
   if (skipReason) {
     return {
       status: 'skipped',
