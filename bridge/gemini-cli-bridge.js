@@ -1,20 +1,34 @@
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { GEMINI_CLI_MODEL, buildUserMessage } from '../lib/api.js';
+import {
+  createEstimatedTokenUsage,
+  extractGeminiCliStatsTokenUsage,
+  extractGenericTokenUsage,
+  summarizeTokenUsage
+} from '../lib/token-usage.js';
+import {
+  DEFAULT_TOKEN_USAGE_CSV_PATH,
+  createTokenUsageCsvLogger
+} from './token-usage-csv.js';
 
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
 const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '60000');
-const DEFAULT_CONCURRENCY = Number(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '3');
+const DEFAULT_CONCURRENCY = Number(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '2');
 const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
 const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
 const TRACE_LOG_PATH = process.env.XGA_GEMINI_TRACE_LOG || '/tmp/xga-gemini-bridge.log';
+const RESET_TRACE_LOG_ON_START = process.env.XGA_GEMINI_TRACE_RESET === '1';
+const TOKEN_USAGE_CSV_PATH = process.env.XGA_GEMINI_TOKEN_USAGE_CSV ||
+  process.env.XGA_TOKEN_USAGE_CSV ||
+  DEFAULT_TOKEN_USAGE_CSV_PATH;
 const GEMINI_CONFIG_DIRNAME = '.gemini';
 const GEMINI_AUTH_FILES = ['google_accounts.json', 'installation_id', 'oauth_creds.json', 'state.json'];
 const GEMINI_STATUS_TTL_MS = 10000;
@@ -31,6 +45,7 @@ let geminiStatusCache = {
   expiresAt: 0
 };
 const TIMEOUT_RETRY_LIMIT = 1;
+const tokenUsageCsv = createTokenUsageCsvLogger(TOKEN_USAGE_CSV_PATH);
 
 function nowNs() {
   return process.hrtime.bigint();
@@ -49,6 +64,126 @@ function getOutputTail(value, maxLength = 400) {
   const text = typeof value === 'string' ? value.trim() : '';
   if (!text) return '';
   return text.length <= maxLength ? text : text.slice(-maxLength);
+}
+
+function killProcessGroup(pid, signal) {
+  if (!pid) return;
+  try {
+    process.kill(-pid, signal);
+    return;
+  } catch {}
+
+  try {
+    process.kill(pid, signal);
+  } catch {}
+}
+
+function createCliError({ file, code, signal, stdout, stderr, timedOut = false, killed = false }) {
+  const error = timedOut
+    ? new Error(`Command timed out: ${file}`)
+    : new Error(`Command failed: ${file} exited with ${signal ? `signal ${signal}` : `code ${code}`}`);
+  error.code = timedOut ? 'ETIMEDOUT' : code;
+  error.signal = signal;
+  error.killed = killed || timedOut;
+  error.stdout = stdout;
+  error.stderr = stderr;
+  return error;
+}
+
+function execFileProcessGroup(file, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const {
+      timeout = 0,
+      maxBuffer = 1024 * 1024,
+      ...spawnOptions
+    } = options;
+    const child = spawn(file, args, {
+      ...spawnOptions,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let timeoutId = null;
+    let killId = null;
+
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (killId) clearTimeout(killId);
+    };
+
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const appendOutput = (streamName, chunk) => {
+      const nextValue = streamName === 'stdout' ? stdout + chunk : stderr + chunk;
+      const combinedLength = Buffer.byteLength(streamName === 'stdout' ? nextValue + stderr : stdout + nextValue);
+      if (combinedLength > maxBuffer) {
+        killProcessGroup(child.pid, 'SIGTERM');
+        killId = setTimeout(() => killProcessGroup(child.pid, 'SIGKILL'), 1000);
+        rejectOnce(createCliError({
+          file,
+          code: 'ENOBUFS',
+          stdout,
+          stderr,
+          killed: true
+        }));
+        return;
+      }
+
+      if (streamName === 'stdout') stdout = nextValue;
+      else stderr = nextValue;
+    };
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => appendOutput('stdout', chunk));
+    child.stderr?.on('data', (chunk) => appendOutput('stderr', chunk));
+
+    child.on('error', (error) => {
+      error.stdout = stdout;
+      error.stderr = stderr;
+      rejectOnce(error);
+    });
+
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (timedOut) {
+        reject(createCliError({
+          file,
+          code,
+          signal,
+          stdout,
+          stderr,
+          timedOut: true
+        }));
+        return;
+      }
+
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+
+      reject(createCliError({ file, code, signal, stdout, stderr }));
+    });
+
+    if (timeout > 0) {
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        killProcessGroup(child.pid, 'SIGTERM');
+        killId = setTimeout(() => killProcessGroup(child.pid, 'SIGKILL'), 1000);
+      }, timeout);
+    }
+  });
 }
 
 function appendTraceLog(entry) {
@@ -140,7 +275,7 @@ function extractFirstJsonObject(text) {
   return null;
 }
 
-function parseCliJsonOutput(stdout) {
+function parseCliJsonOutputResult(stdout) {
   const jsonText = extractFirstJsonObject(stdout);
   if (!jsonText) {
     throw new BridgeError('cli_invalid_json', 'Gemini CLI returned invalid JSON output', 502);
@@ -166,7 +301,17 @@ function parseCliJsonOutput(stdout) {
     throw new BridgeError('cli_empty_response', 'Gemini CLI returned no text response', 502);
   }
 
-  return text;
+  return {
+    text,
+    tokenUsage: summarizeTokenUsage(
+      extractGeminiCliStatsTokenUsage(payload) ||
+      extractGenericTokenUsage(payload, 'gemini-cli')
+    )
+  };
+}
+
+function parseCliJsonOutput(stdout) {
+  return parseCliJsonOutputResult(stdout).text;
 }
 
 function mapCliExecutionError(error, stdout = '', stderr = '') {
@@ -430,21 +575,30 @@ async function invokeGeminiCli({
           runtime,
           timeoutMs
         });
-        const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
+        const { stdout } = await execFileProcessGroup(invocation.file, invocation.args, invocation.options);
         logRequest(requestId, `Gemini CLI process finished in ${formatDurationNs(execStartedAt)}`, {
           attempt
         });
 
         const parseStartedAt = nowNs();
-        const text = parseCliJsonOutput(stdout);
+        const result = parseCliJsonOutputResult(stdout);
+        const tokenUsage = result.tokenUsage || createEstimatedTokenUsage({
+          prompt,
+          outputText: result.text
+        });
         logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
           attempt,
-          responseLength: text.length
+          responseLength: result.text.length,
+          tokenUsage
         });
         logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`, {
-          attempt
+          attempt,
+          tokenUsage
         });
-        return text;
+        return {
+          text: result.text,
+          tokenUsage
+        };
       } catch (error) {
         const stdoutTail = getOutputTail(error?.stdout);
         const stderrTail = getOutputTail(error?.stderr);
@@ -498,7 +652,8 @@ function readJsonBody(req) {
 
 function createBridgeServer({
   invokeReply = invokeGeminiCli,
-  getStatus = getGeminiStatus
+  getStatus = getGeminiStatus,
+  tokenUsageCsvLogger = tokenUsageCsv
 } = {}) {
   return http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
@@ -556,18 +711,59 @@ function createBridgeServer({
           throw new BridgeError('missing_user_prompt', 'userPrompt or tweetText is required', 400);
         }
 
-        const text = await invokeReply({
+        const model = typeof body.model === 'string' && body.model.trim() ? body.model : DEFAULT_MODEL;
+        const durationStartedAt = Date.now();
+        const replyResult = await invokeReply({
           systemPrompt: body.systemPrompt,
           userPrompt: resolvedUserPrompt,
           tweetText: body.tweetText,
           context: body.context,
           requestId,
-          model: typeof body.model === 'string' && body.model.trim() ? body.model : DEFAULT_MODEL,
+          model,
           timeoutMs: Number.isFinite(body.timeoutMs) ? body.timeoutMs : DEFAULT_TIMEOUT_MS
         });
+        const text = typeof replyResult === 'string' ? replyResult.trim() : replyResult.text?.trim();
+        if (!text) {
+          throw new BridgeError('cli_empty_response', 'Gemini CLI returned no text response', 502);
+        }
+        const userPrompt = resolvedUserPrompt || buildUserMessage(body.tweetText, body.context);
+        const tokenUsage = summarizeTokenUsage(
+          typeof replyResult === 'string' ? null : replyResult.tokenUsage
+        ) || createEstimatedTokenUsage({
+          systemPrompt: body.systemPrompt,
+          userPrompt,
+          outputText: text
+        });
+
+        const tokenUsageEntry = {
+          requestId,
+          provider: 'gemini-cli-local',
+          model,
+          mode: typeof body.mode === 'string' ? body.mode : '',
+          phase: typeof body.phase === 'string' ? body.phase : '',
+          status: 'ready',
+          tokenUsage,
+          promptChars: `${body.systemPrompt}\n${userPrompt}`.length,
+          systemPromptChars: body.systemPrompt.length,
+          userPromptChars: userPrompt.length,
+          replyChars: text.length,
+          durationMs: Date.now() - durationStartedAt
+        };
+        logRequest(requestId, 'Token usage', {
+          ...tokenUsage,
+          csvPath: TOKEN_USAGE_CSV_PATH
+        });
+        if (tokenUsageCsvLogger) {
+          void tokenUsageCsvLogger.append(tokenUsageEntry).catch((error) => {
+            logRequest(requestId, 'Failed to append token usage CSV', {
+              error: error.message,
+              csvPath: TOKEN_USAGE_CSV_PATH
+            });
+          });
+        }
 
         logRequest(requestId, `HTTP response sent in ${formatDurationNs(requestStartedAt)}`);
-        sendJson(res, 200, { text });
+        sendJson(res, 200, { text, tokenUsage });
         return;
       }
 
@@ -585,14 +781,18 @@ function createBridgeServer({
 
 async function startBridgeServer() {
   await ensureGeminiRuntime();
-  await writeFile(TRACE_LOG_PATH, '', 'utf8');
+  await mkdir(path.dirname(TRACE_LOG_PATH), { recursive: true });
+  if (RESET_TRACE_LOG_ON_START) {
+    await writeFile(TRACE_LOG_PATH, '', 'utf8');
+  }
   const server = createBridgeServer();
   await new Promise((resolve) => server.listen(DEFAULT_PORT, '127.0.0.1', resolve));
   logRequest('system', 'Bridge started', {
     port: DEFAULT_PORT,
     model: DEFAULT_MODEL,
     concurrency: DEFAULT_CONCURRENCY,
-    traceLogPath: TRACE_LOG_PATH
+    traceLogPath: TRACE_LOG_PATH,
+    tokenUsageCsvPath: TOKEN_USAGE_CSV_PATH
   });
   console.log(`Gemini CLI bridge listening on http://127.0.0.1:${DEFAULT_PORT}`);
   return server;
@@ -630,5 +830,6 @@ export {
   invokeGeminiCli,
   mapCliExecutionError,
   parseCliJsonOutput,
+  parseCliJsonOutputResult,
   startBridgeServer
 };

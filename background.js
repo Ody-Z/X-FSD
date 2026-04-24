@@ -1,23 +1,28 @@
 import {
-  AUTO_STRATEGY_CONFIG,
   CLAUDE_CODE_HAIKU_MODEL,
+  CLAUDE_CODE_LOCAL_MODEL,
   DRAFT_PHASE_FULL,
   DRAFT_PHASE_QUICK,
   GEMINI_CLI_MODEL,
   GEMINI_CLI_LOCAL_MODEL,
+  GEMINI_MODEL,
   TONE_DEFAULTS,
   buildAdaptiveDraftPrompt,
   buildManualDraftPrompt,
+  callClaudeResult,
+  callGeminiResult,
+  callKimiResult,
   detectAutoDraftSkipReason,
   getBaseToneForStrategy,
   guessStrategyForTone,
   parseAdaptiveDraftResult
 } from './lib/api.js';
 import {
-  callLocalClaudeCodeBridge,
-  callLocalGeminiCliBridge,
+  callLocalClaudeCodeBridgeWithUsage,
+  callLocalGeminiCliBridgeWithUsage,
   reportLocalBridgeTrace
 } from './lib/local-cli.js';
+import { summarizeTokenUsage } from './lib/token-usage.js';
 
 const SETTINGS_CACHE = {
   value: null
@@ -127,16 +132,19 @@ async function generateWithGeminiLocal({
   userPrompt,
   tweetText,
   context,
-  phase
+  phase,
+  mode
 }) {
-  return callLocalGeminiCliBridge({
+  return callLocalGeminiCliBridgeWithUsage({
     systemPrompt,
     userPrompt,
     tweetText,
     context,
     model: GEMINI_CLI_MODEL,
     requestId,
-    timeoutMs: resolvePhaseTimeout(phase)
+    timeoutMs: resolvePhaseTimeout(phase),
+    mode,
+    phase
   });
 }
 
@@ -146,20 +154,94 @@ async function generateWithClaudeLocal({
   userPrompt,
   tweetText,
   context,
-  phase
+  phase,
+  mode
 }) {
-  return callLocalClaudeCodeBridge({
+  return callLocalClaudeCodeBridgeWithUsage({
     systemPrompt,
     userPrompt,
     tweetText,
     context,
     model: CLAUDE_CODE_HAIKU_MODEL,
     requestId,
-    timeoutMs: resolvePhaseTimeout(phase)
+    timeoutMs: resolvePhaseTimeout(phase),
+    mode,
+    phase
   });
 }
 
-async function handleGenerateAutoDraft(msg, requestId) {
+function getModelLabel(activeModel) {
+  switch (activeModel) {
+    case 'kimi-k2.5':
+      return 'kimi';
+    case 'claude-haiku':
+    case CLAUDE_CODE_LOCAL_MODEL:
+      return 'claude';
+    default:
+      return 'gemini';
+  }
+}
+
+function resolveDraftModel(settings, requestedProvider) {
+  const activeModel = requestedProvider === 'claude-local'
+    ? CLAUDE_CODE_LOCAL_MODEL
+    : requestedProvider === 'gemini-local'
+      ? GEMINI_CLI_LOCAL_MODEL
+      : (settings.activeModel || GEMINI_CLI_LOCAL_MODEL);
+
+  return {
+    activeModel,
+    modelLabel: getModelLabel(activeModel)
+  };
+}
+
+async function runDraftModel({
+  settings,
+  modelTarget,
+  requestId,
+  systemPrompt,
+  userPrompt,
+  tweetText,
+  context,
+  phase,
+  mode
+}) {
+  switch (modelTarget.activeModel) {
+    case CLAUDE_CODE_LOCAL_MODEL:
+      return generateWithClaudeLocal({
+        requestId,
+        systemPrompt,
+        userPrompt,
+        tweetText,
+        context,
+        phase,
+        mode
+      });
+    case GEMINI_CLI_LOCAL_MODEL:
+      return generateWithGeminiLocal({
+        requestId,
+        systemPrompt,
+        userPrompt,
+        tweetText,
+        context,
+        phase,
+        mode
+      });
+    case GEMINI_MODEL:
+      if (!settings.geminiApiKey) throw new Error('Gemini API key not set');
+      return callGeminiResult(settings.geminiApiKey, systemPrompt, userPrompt);
+    case 'kimi-k2.5':
+      if (!settings.moonshotApiKey) throw new Error('Moonshot API key not set');
+      return callKimiResult(settings.moonshotApiKey, systemPrompt, userPrompt, settings.moonshotEndpoint);
+    case 'claude-haiku':
+      if (!settings.anthropicApiKey) throw new Error('Anthropic API key not set');
+      return callClaudeResult(settings.anthropicApiKey, systemPrompt, userPrompt);
+    default:
+      throw new Error(`Unsupported active model: ${modelTarget.activeModel}`);
+  }
+}
+
+async function handleGenerateAutoDraft(msg, requestId, settings, modelTarget) {
   const skipReason = detectAutoDraftSkipReason(msg.tweetText, msg.context);
   if (skipReason) {
     return {
@@ -167,7 +249,9 @@ async function handleGenerateAutoDraft(msg, requestId) {
       strategyType: null,
       baseTone: null,
       text: '',
-      reason: skipReason
+      reason: skipReason,
+      modelLabel: modelTarget.modelLabel,
+      activeModel: modelTarget.activeModel
     };
   }
 
@@ -179,30 +263,29 @@ async function handleGenerateAutoDraft(msg, requestId) {
     phase,
     toneDataByTone
   });
-  const provider = msg.provider === 'claude-local' ? 'claude-local' : 'gemini-local';
 
-  const rawText = provider === 'claude-local'
-    ? await generateWithClaudeLocal({
-      requestId,
-      systemPrompt,
-      userPrompt: userMessage,
-      tweetText: msg.tweetText,
-      context: msg.context,
-      phase
-    })
-    : await generateWithGeminiLocal({
-      requestId,
-      systemPrompt,
-      userPrompt: userMessage,
-      tweetText: msg.tweetText,
-      context: msg.context,
-      phase
-    });
+  const modelResult = await runDraftModel({
+    settings,
+    modelTarget,
+    requestId,
+    systemPrompt,
+    userPrompt: userMessage,
+    tweetText: msg.tweetText,
+    context: msg.context,
+    phase,
+    mode: 'auto'
+  });
+  const rawText = modelResult.text;
 
-  return parseAdaptiveDraftResult(rawText);
+  return {
+    ...parseAdaptiveDraftResult(rawText),
+    tokenUsage: summarizeTokenUsage(modelResult.tokenUsage),
+    modelLabel: modelTarget.modelLabel,
+    activeModel: modelTarget.activeModel
+  };
 }
 
-async function handleGenerateToneDraft(msg, requestId) {
+async function handleGenerateToneDraft(msg, requestId, settings, modelTarget) {
   const phase = msg.phase === DRAFT_PHASE_FULL ? DRAFT_PHASE_FULL : DRAFT_PHASE_QUICK;
   const toneData = await getToneData(msg.tone);
   const { systemPrompt, userMessage, baseTone } = buildManualDraftPrompt({
@@ -214,24 +297,18 @@ async function handleGenerateToneDraft(msg, requestId) {
     baseToneHint: msg.baseToneHint || 'smart'
   });
 
-  const provider = msg.provider === 'claude-local' ? 'claude-local' : 'gemini-local';
-  const text = provider === 'claude-local'
-    ? await generateWithClaudeLocal({
-      requestId,
-      systemPrompt,
-      userPrompt: userMessage,
-      tweetText: msg.tweetText,
-      context: msg.context,
-      phase
-    })
-    : await generateWithGeminiLocal({
-      requestId,
-      systemPrompt,
-      userPrompt: userMessage,
-      tweetText: msg.tweetText,
-      context: msg.context,
-      phase
-    });
+  const modelResult = await runDraftModel({
+    settings,
+    modelTarget,
+    requestId,
+    systemPrompt,
+    userPrompt: userMessage,
+    tweetText: msg.tweetText,
+    context: msg.context,
+    phase,
+    mode: 'tone'
+  });
+  const text = modelResult.text;
 
   const strategyType = msg.tone === 'enhance'
     ? guessStrategyForTone(baseTone, msg.strategyTypeHint || 'deep_share')
@@ -242,7 +319,10 @@ async function handleGenerateToneDraft(msg, requestId) {
     strategyType,
     baseTone: msg.tone === 'enhance' ? (msg.baseToneHint || baseTone || getBaseToneForStrategy(strategyType)) : baseTone,
     text: typeof text === 'string' ? text.trim() : '',
-    reason: ''
+    reason: '',
+    tokenUsage: summarizeTokenUsage(modelResult.tokenUsage),
+    modelLabel: modelTarget.modelLabel,
+    activeModel: modelTarget.activeModel
   };
 }
 
@@ -259,8 +339,10 @@ async function handleGenerateDraft(msg) {
 
   const settingsStartedAt = nowMs();
   const settings = await getSettings();
+  const modelTarget = resolveDraftModel(settings, msg.provider);
   logRequest(requestId, `Loaded settings in ${formatDuration(nowMs() - settingsStartedAt)}`, {
-    autoDraftsEnabled: settings.autoDraftsEnabled
+    autoDraftsEnabled: settings.autoDraftsEnabled,
+    activeModel: modelTarget.activeModel
   });
 
   if (settings.autoDraftsEnabled === false) {
@@ -269,32 +351,39 @@ async function handleGenerateDraft(msg) {
       strategyType: null,
       baseTone: null,
       text: '',
-      reason: 'Auto drafts are disabled in settings.'
+      reason: 'Auto drafts are disabled in settings.',
+      modelLabel: modelTarget.modelLabel,
+      activeModel: modelTarget.activeModel
     };
   }
 
   try {
     const response = msg.mode === 'tone'
-      ? await handleGenerateToneDraft(msg, requestId)
-      : await handleGenerateAutoDraft(msg, requestId);
+      ? await handleGenerateToneDraft(msg, requestId, settings, modelTarget)
+      : await handleGenerateAutoDraft(msg, requestId, settings, modelTarget);
 
     logRequest(requestId, `Draft finished in ${formatDuration(nowMs() - startedAt)}`, {
       status: response.status,
       strategyType: response.strategyType,
       baseTone: response.baseTone,
-      replyLength: response.text?.length || 0
+      replyLength: response.text?.length || 0,
+      tokenUsage: response.tokenUsage || null,
+      activeModel: modelTarget.activeModel
     });
     return response;
   } catch (error) {
     logRequest(requestId, `Draft failed after ${formatDuration(nowMs() - startedAt)}`, {
-      error: error.message
+      error: error.message,
+      activeModel: modelTarget.activeModel
     });
     return {
       status: 'failed',
       strategyType: null,
       baseTone: null,
       text: '',
-      reason: error.message
+      reason: error.message,
+      modelLabel: modelTarget.modelLabel,
+      activeModel: modelTarget.activeModel
     };
   }
 }

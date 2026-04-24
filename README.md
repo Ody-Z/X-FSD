@@ -68,10 +68,13 @@ Notes:
 - The bridge listens on `http://127.0.0.1:43117` by default.
 - `Gemini API Key` is ignored in local CLI mode.
 - If reply generation says the bridge is unavailable, start it with `npm run bridge`.
+- Token usage is logged in the bridge trace and appended to `/tmp/xga-token-usage.csv` by default.
 - Optional overrides:
   - `XGA_GEMINI_BRIDGE_PORT`
   - `XGA_GEMINI_CLI_TIMEOUT_MS`
   - `XGA_GEMINI_CLI_BIN`
+  - `XGA_GEMINI_BRIDGE_CONCURRENCY`
+  - `XGA_TOKEN_USAGE_CSV` or `XGA_GEMINI_TOKEN_USAGE_CSV`
 
 ## Local Claude Code Haiku Mode (macOS)
 
@@ -92,11 +95,13 @@ Notes:
 - The bridge listens on `http://127.0.0.1:43118` by default.
 - `Anthropic API Key` is ignored in local Claude Code mode.
 - If reply generation says the bridge is unavailable, start it with `npm run bridge:claude`.
+- Token usage is logged in the bridge trace and appended to `/tmp/xga-token-usage.csv` by default.
 - Optional overrides:
   - `XGA_CLAUDE_BRIDGE_PORT`
   - `XGA_CLAUDE_CLI_TIMEOUT_MS`
   - `XGA_CLAUDE_CODE_MODEL`
   - `XGA_CLAUDE_BIN`
+  - `XGA_TOKEN_USAGE_CSV` or `XGA_CLAUDE_TOKEN_USAGE_CSV`
 
 4. **Use**
    - Go to X.com and open any reply composer

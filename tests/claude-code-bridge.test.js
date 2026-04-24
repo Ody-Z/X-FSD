@@ -124,7 +124,8 @@ describe('createBridgeServer', () => {
       invokeReply: async (payload) => {
         requestPayload = payload;
         return 'reply text';
-      }
+      },
+      tokenUsageCsvLogger: null
     });
 
     await withServer(server, async (origin) => {

@@ -21,6 +21,7 @@
   const INLINE_CARD_GAP = 12;
   const LOOKAHEAD_COUNT = 6;
   const MAX_TRACKED_POSTS = 48;
+  const SENT_HISTORY_LIMIT = 18;
   const LOG_PREFIX = '[XGA]';
 
   const state = {
@@ -31,9 +32,11 @@
     drawerRoot: null,
     activeGenerationCount: 0,
     inFlightPostIds: new Set(),
-    focusedPostId: '',
+    expandedDeckCardId: '',
+    sentHistory: [],
+    sentCount: 0,
     refreshScheduled: false,
-    interactionLockedUntil: 0
+    ownUsername: ''
   };
 
   function createRequestId() {
@@ -52,6 +55,17 @@
     return typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : '';
   }
 
+  function normalizeHandleIdentifier(handle) {
+    return normalizeWhitespace(handle)
+      .replace(/^@/, '')
+      .toLowerCase();
+  }
+
+  function isOwnPosterHandle(posterHandle) {
+    const ownUsername = normalizeHandleIdentifier(state.ownUsername);
+    return Boolean(ownUsername && normalizeHandleIdentifier(posterHandle) === ownUsername);
+  }
+
   function isVisibleRect(rect) {
     return rect.bottom > 24 && rect.top < window.innerHeight - 24;
   }
@@ -62,6 +76,19 @@
     const href = fallback?.getAttribute('href') || '';
     const match = href.match(/\/status\/(\d+)/);
     return match ? match[1] : '';
+  }
+
+  function findTweetUrl(article) {
+    const timeLink = article.querySelector('a[href*="/status/"] time')?.closest('a[href*="/status/"]');
+    const fallback = timeLink || article.querySelector('a[href*="/status/"]');
+    const href = fallback?.getAttribute('href') || '';
+    if (!href) return '';
+
+    try {
+      return new URL(href, window.location.origin).toString();
+    } catch {
+      return '';
+    }
   }
 
   function findUserNameHandle(userName) {
@@ -129,8 +156,50 @@
   }
 
   function findReplyButton(article) {
-    return article.querySelector('button[data-testid="reply"]') ||
+    const candidate = article.querySelector('button[data-testid="reply"]') ||
       article.querySelector('[data-testid="reply"]');
+    if (!candidate) return null;
+    return candidate.closest('button, [role="button"]') || candidate;
+  }
+
+  function isElementDisabled(element) {
+    if (!element) return true;
+    if (typeof element.matches === 'function' && element.matches(':disabled')) return true;
+    if (element.getAttribute?.('disabled') !== null) return true;
+    if (element.getAttribute?.('aria-disabled') === 'true') return true;
+
+    const disabledAncestor = element.closest?.(':disabled, [disabled], [aria-disabled="true"]');
+    if (disabledAncestor) return true;
+
+    const computed = window.getComputedStyle(element);
+    if (computed.pointerEvents === 'none') return true;
+
+    return false;
+  }
+
+  function canReplyToArticle(article) {
+    const replyButton = findReplyButton(article);
+    if (!replyButton) return false;
+    return !isElementDisabled(replyButton);
+  }
+
+  function isPromotedArticle(article) {
+    if (article.closest('div[data-testid="placementTracking"]')) return true;
+    if (article.querySelector('div[data-testid="placementTracking"]')) return true;
+
+    const articleRect = article.getBoundingClientRect();
+    const adBadge = Array.from(article.querySelectorAll('span, div, a'))
+      .find((element) => {
+        const text = normalizeWhitespace(element.textContent || '');
+        if (!/^(ad|promoted|promoted by)$/i.test(text)) return false;
+
+        const rect = element.getBoundingClientRect();
+        const withinHeaderBand = rect.top >= articleRect.top - 8 && rect.bottom <= articleRect.top + 72;
+        const nearRightEdge = rect.right >= articleRect.right - 140;
+        return withinHeaderBand && nearRightEdge;
+      });
+
+    return Boolean(adBadge);
   }
 
   function getPageContext() {
@@ -163,7 +232,7 @@
   function getCandidatePreferenceScore(item) {
     let score = 0;
     if (item.article.closest('[role="dialog"]')) score += 4;
-    if (findReplyButton(item.article)) score += 2;
+    if (canReplyToArticle(item.article)) score += 2;
     if (isVisibleRect(item.rect)) score += 1;
     return score;
   }
@@ -192,6 +261,8 @@
     const pageContext = getPageContext();
     const items = Array.from(document.querySelectorAll('article'))
       .map((article) => {
+        if (isPromotedArticle(article) || !canReplyToArticle(article)) return null;
+
         const postId = findTweetId(article);
         const text = findTweetText(article);
         const quotedTweet = findQuotedTweet(article);
@@ -199,10 +270,12 @@
 
         const rect = article.getBoundingClientRect();
         const posterHandle = findPosterHandle(article);
+        if (isOwnPosterHandle(posterHandle)) return null;
         return {
           postId,
           article,
           text,
+          tweetUrl: findTweetUrl(article),
           rect,
           posterHandle,
           context: {
@@ -229,15 +302,6 @@
     if (!state.overlayRoot) {
       const overlay = document.createElement('div');
       overlay.className = 'xga-overlay-root';
-      overlay.addEventListener('pointerdown', () => {
-        state.interactionLockedUntil = Date.now() + 1500;
-      }, true);
-      overlay.addEventListener('focusin', () => {
-        state.interactionLockedUntil = Date.now() + 5000;
-      }, true);
-      overlay.addEventListener('input', () => {
-        state.interactionLockedUntil = Date.now() + 5000;
-      }, true);
       document.body.appendChild(overlay);
       state.overlayRoot = overlay;
     }
@@ -245,15 +309,6 @@
     if (!state.drawerRoot) {
       const drawer = document.createElement('div');
       drawer.className = 'xga-drawer-root';
-      drawer.addEventListener('pointerdown', () => {
-        state.interactionLockedUntil = Date.now() + 1500;
-      }, true);
-      drawer.addEventListener('focusin', () => {
-        state.interactionLockedUntil = Date.now() + 5000;
-      }, true);
-      drawer.addEventListener('input', () => {
-        state.interactionLockedUntil = Date.now() + 5000;
-      }, true);
       document.body.appendChild(drawer);
       state.drawerRoot = drawer;
     }
@@ -273,7 +328,7 @@
 
   function isUserInteractingWithCard() {
     const active = document.activeElement;
-    return Date.now() < state.interactionLockedUntil || Boolean(active && active.closest('.xga-card, .xga-stack-card'));
+    return Boolean(active && active.closest('.xga-card-textarea, .xga-deck-card-textarea, .xga-card-select'));
   }
 
   function createDraftRecord(item) {
@@ -281,6 +336,7 @@
       postId: item.postId,
       article: item.article,
       text: item.text,
+      tweetUrl: item.tweetUrl,
       posterHandle: item.posterHandle,
       context: item.context,
       status: 'idle',
@@ -289,6 +345,7 @@
       selectedMode: 'auto',
       autoText: '',
       editedText: '',
+      modelLabel: '',
       error: '',
       lastSeenAt: Date.now()
     };
@@ -300,6 +357,7 @@
 
   function updateDraftRecord(record, item) {
     record.article = item.article;
+    record.tweetUrl = item.tweetUrl;
     record.posterHandle = item.posterHandle;
     record.context = item.context;
     record.lastSeenAt = Date.now();
@@ -329,6 +387,20 @@
       }
     }
     pruneDrafts();
+  }
+
+  function removeOwnDrafts() {
+    for (const [postId, record] of state.drafts.entries()) {
+      if (!isOwnPosterHandle(record.posterHandle) || record.status === 'sending') continue;
+      state.drafts.delete(postId);
+      state.inFlightPostIds.delete(postId);
+    }
+
+    state.visibleIds = state.visibleIds.filter((postId) => state.drafts.has(postId));
+    state.priorityIds = state.priorityIds.filter((postId) => state.drafts.has(postId));
+    if (state.expandedDeckCardId && !state.drafts.has(state.expandedDeckCardId)) {
+      state.expandedDeckCardId = '';
+    }
   }
 
   function computePriority(items) {
@@ -437,10 +509,14 @@
     return button;
   }
 
-  function focusDraft(postId) {
-    state.focusedPostId = postId;
-    state.interactionLockedUntil = Date.now() + 5000;
-    render(collectCandidateArticles());
+  function createModelBadge(modelLabel) {
+    const label = normalizeWhitespace(modelLabel).toLowerCase();
+    if (!label) return null;
+
+    const badge = document.createElement('span');
+    badge.className = 'xga-card-model-badge';
+    badge.textContent = label;
+    return badge;
   }
 
   function buildCard(record, compact = false) {
@@ -450,15 +526,22 @@
     const header = document.createElement('div');
     header.className = 'xga-card-header';
 
+    const titleRow = document.createElement('div');
+    titleRow.className = 'xga-card-title-row';
+
     const title = document.createElement('div');
     title.className = 'xga-card-title';
     title.textContent = getStrategyLabel(record);
+    titleRow.appendChild(title);
+
+    const modelBadge = createModelBadge(record.modelLabel);
+    if (modelBadge) titleRow.appendChild(modelBadge);
 
     const badge = document.createElement('span');
     badge.className = `xga-card-badge ${record.status}`;
     badge.textContent = getStatusLabel(record);
 
-    header.appendChild(title);
+    header.appendChild(titleRow);
     header.appendChild(badge);
     card.appendChild(header);
 
@@ -512,14 +595,7 @@
     actions.appendChild(createButton(
       'Regenerate',
       'xga-card-btn',
-      () => regenerateDraft(record.postId, 'gemini-local'),
-      record.status === 'sending'
-    ));
-
-    actions.appendChild(createButton(
-      'Claude',
-      'xga-card-btn subtle',
-      () => regenerateDraft(record.postId, 'claude-local'),
+      () => regenerateDraft(record.postId),
       record.status === 'sending'
     ));
 
@@ -536,83 +612,21 @@
     return card;
   }
 
-  function buildOverflowStackCard(record) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'xga-stack-card';
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      focusDraft(record.postId);
-    });
-
-    const header = document.createElement('div');
-    header.className = 'xga-stack-card-header';
-
-    const title = document.createElement('div');
-    title.className = 'xga-stack-card-title';
-    title.textContent = record.posterHandle || 'Post draft';
-
-    const badge = document.createElement('span');
-    badge.className = `xga-card-badge ${record.status}`;
-    badge.textContent = getStatusLabel(record);
-
-    header.appendChild(title);
-    header.appendChild(badge);
-    button.appendChild(header);
-
-    const preview = document.createElement('div');
-    preview.className = 'xga-stack-card-preview';
-    preview.textContent = record.text || 'No post text available.';
-    button.appendChild(preview);
-
-    const meta = document.createElement('div');
-    meta.className = 'xga-stack-card-meta';
-    if (record.status === 'ready') {
-      meta.textContent = `${getStrategyLabel(record)} draft ready`;
-    } else if (record.status === 'generating') {
-      meta.textContent = 'Generating draft...';
-    } else if (record.error) {
-      meta.textContent = record.error;
-    } else if (record.status === 'queued') {
-      meta.textContent = 'Waiting in queue...';
-    } else {
-      meta.textContent = 'Tap to open this draft.';
-    }
-    button.appendChild(meta);
-
-    return button;
-  }
-
   function getInlineLayout(items) {
     const visibleItems = items.filter((item) => state.visibleIds.includes(item.postId));
     const visibleMap = new Map(visibleItems.map((item) => [item.postId, item]));
 
-    if (state.focusedPostId && !visibleMap.has(state.focusedPostId)) {
-      state.focusedPostId = '';
-    }
-
     const ranked = [];
-    if (state.focusedPostId) {
-      const focusedItem = visibleMap.get(state.focusedPostId);
-      if (focusedItem) ranked.push(focusedItem);
-    }
-
     for (const postId of state.priorityIds) {
       const item = visibleMap.get(postId);
       if (!item || ranked.some((entry) => entry.postId === postId)) continue;
       ranked.push(item);
     }
 
-    const mainItems = ranked
-      .slice(0, INLINE_MAIN_CARD_COUNT)
-      .sort((a, b) => a.rect.top - b.rect.top);
-    const mainIds = new Set(mainItems.map((item) => item.postId));
-    const overflowItems = visibleItems.filter((item) => !mainIds.has(item.postId));
-
     return {
-      mainItems,
-      overflowItems
+      mainItems: ranked
+        .slice(0, INLINE_MAIN_CARD_COUNT)
+        .sort((a, b) => a.rect.top - b.rect.top)
     };
   }
 
@@ -622,50 +636,370 @@
     return Math.max(0, Math.min(1, (rect.bottom - 72) / 120));
   }
 
-  function renderOverflowStack(items) {
-    state.drawerRoot.innerHTML = '';
-    if (items.length === 0) {
-      state.drawerRoot.classList.remove('active', 'overflow-active');
+  function getOffscreenDistance(postId, itemMap) {
+    const item = itemMap.get(postId);
+    if (!item) return Number.MAX_SAFE_INTEGER;
+
+    if (item.rect.top >= window.innerHeight - 24) {
+      return item.rect.top - (window.innerHeight - 24);
+    }
+    if (item.rect.bottom <= 24) {
+      return 24 - item.rect.bottom;
+    }
+    return 0;
+  }
+
+  function compareDeckRecords(a, b, itemMap) {
+    const distanceDelta = getOffscreenDistance(a.postId, itemMap) - getOffscreenDistance(b.postId, itemMap);
+    if (distanceDelta !== 0) return distanceDelta;
+    return b.lastSeenAt - a.lastSeenAt;
+  }
+
+  function getDeckState(items) {
+    const itemMap = new Map(items.map((item) => [item.postId, item]));
+    const visibleSet = new Set(state.visibleIds);
+    const offscreenRecords = Array.from(state.drafts.values())
+      .filter((record) => !visibleSet.has(record.postId));
+
+    const ready = offscreenRecords
+      .filter((record) => ['ready', 'failed'].includes(record.status))
+      .sort((a, b) => compareDeckRecords(a, b, itemMap));
+    const processing = offscreenRecords
+      .filter((record) => ['queued', 'generating'].includes(record.status))
+      .sort((a, b) => compareDeckRecords(a, b, itemMap));
+    const sent = state.sentHistory
+      .filter((entry) => !visibleSet.has(entry.postId))
+      .sort((a, b) => b.sentAt - a.sentAt);
+
+    const deckIds = new Set([
+      ...ready.map((record) => record.postId),
+      ...processing.map((record) => record.postId),
+      ...sent.map((entry) => entry.postId)
+    ]);
+    if (state.expandedDeckCardId && !deckIds.has(state.expandedDeckCardId)) {
+      state.expandedDeckCardId = '';
+    }
+
+    return { ready, processing, sent };
+  }
+
+  function toggleDeckCard(postId) {
+    state.expandedDeckCardId = state.expandedDeckCardId === postId ? '' : postId;
+    render(collectCandidateArticles());
+  }
+
+  function flashArticle(article) {
+    if (!article) return;
+    article.classList.remove('xga-post-highlight');
+    requestAnimationFrame(() => {
+      article.classList.add('xga-post-highlight');
+      window.setTimeout(() => article.classList.remove('xga-post-highlight'), 1800);
+    });
+  }
+
+  function resolveArticle(postId, fallbackArticle = null) {
+    if (fallbackArticle?.isConnected) return fallbackArticle;
+    return document.querySelector(`a[href*="/status/${postId}"]`)?.closest('article') || null;
+  }
+
+  function openPost(postId) {
+    const record = state.drafts.get(postId);
+    const article = resolveArticle(postId, record?.article || null);
+    if (article) {
+      if (record) record.article = article;
+      article.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      flashArticle(article);
       return;
     }
 
-    state.drawerRoot.classList.add('active', 'overflow-active');
+    const sentEntry = state.sentHistory.find((entry) => entry.postId === postId);
+    const tweetUrl = record?.tweetUrl || sentEntry?.tweetUrl || '';
+    if (tweetUrl) {
+      window.open(tweetUrl, '_blank', 'noopener');
+    }
+  }
 
-    const stack = document.createElement('section');
-    stack.className = 'xga-overflow-stack';
+  function rememberSentDraft(record, finalText) {
+    state.sentCount += 1;
+    state.sentHistory = [
+      {
+        postId: record.postId,
+        posterHandle: record.posterHandle,
+        text: record.text,
+        tweetUrl: record.tweetUrl,
+        draftText: finalText,
+        modelLabel: record.modelLabel,
+        sentAt: Date.now()
+      },
+      ...state.sentHistory.filter((entry) => entry.postId !== record.postId)
+    ].slice(0, SENT_HISTORY_LIMIT);
+  }
+
+  function buildDeckCard(recordOrEntry, deckKind, depth = 0) {
+    const postId = recordOrEntry.postId;
+    const expanded = state.expandedDeckCardId === postId;
+    const status = deckKind === 'sent' ? 'sent' : recordOrEntry.status;
+    const visualDepth = Math.min(depth, 4);
+
+    const card = document.createElement('article');
+    card.className = `xga-deck-card${expanded ? ' is-expanded' : ''}`;
+    card.style.setProperty('--xga-depth', String(visualDepth));
+    card.tabIndex = 0;
+    card.addEventListener('click', (event) => {
+      if (event.target.closest('button, textarea, select, option, a')) return;
+      toggleDeckCard(postId);
+    });
+    card.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggleDeckCard(postId);
+    });
 
     const header = document.createElement('div');
-    header.className = 'xga-overflow-header';
+    header.className = 'xga-deck-card-header';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'xga-deck-card-title-row';
 
     const title = document.createElement('div');
-    title.className = 'xga-overflow-title';
-    title.textContent = `More Drafts (${items.length})`;
+    title.className = 'xga-deck-card-title';
+    title.textContent = recordOrEntry.posterHandle || 'Post draft';
+    titleRow.appendChild(title);
 
-    const hint = document.createElement('div');
-    hint.className = 'xga-overflow-hint';
-    hint.textContent = 'Tap to swap into the main card area.';
+    const modelBadge = createModelBadge(recordOrEntry.modelLabel);
+    if (modelBadge) titleRow.appendChild(modelBadge);
 
-    header.appendChild(title);
-    header.appendChild(hint);
-    stack.appendChild(header);
+    const badge = document.createElement('span');
+    badge.className = `xga-card-badge ${status}`;
+    badge.textContent = getStatusLabel({ status });
 
-    const list = document.createElement('div');
-    list.className = 'xga-overflow-list';
+    header.appendChild(titleRow);
+    header.appendChild(badge);
+    card.appendChild(header);
 
-    for (const item of items) {
-      const record = state.drafts.get(item.postId);
-      if (!record) continue;
-      list.appendChild(buildOverflowStackCard(record));
+    const preview = document.createElement('div');
+    preview.className = 'xga-deck-card-preview';
+    preview.textContent = recordOrEntry.text || 'No post text available.';
+    card.appendChild(preview);
+
+    const meta = document.createElement('div');
+    meta.className = 'xga-deck-card-meta';
+    if (deckKind === 'sent') {
+      meta.textContent = 'Already sent. Expand this card if you want to revisit the reply.';
+    } else if (status === 'ready') {
+      meta.textContent = 'Ready to send. Expand to edit or ship it.';
+    } else if (status === 'failed') {
+      meta.textContent = recordOrEntry.error || 'Needs attention before it can be sent.';
+    } else if (status === 'generating') {
+      meta.textContent = 'Generating in the background.';
+    } else {
+      meta.textContent = 'Queued in the background.';
+    }
+    card.appendChild(meta);
+
+    const details = document.createElement('div');
+    details.className = 'xga-deck-card-details';
+
+    if (expanded) {
+      if (deckKind === 'ready') {
+        if (recordOrEntry.error && recordOrEntry.status === 'failed') {
+          const reason = document.createElement('div');
+          reason.className = 'xga-card-reason';
+          reason.textContent = recordOrEntry.error;
+          details.appendChild(reason);
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'xga-deck-card-textarea';
+        textarea.value = recordOrEntry.editedText || recordOrEntry.autoText || '';
+        textarea.placeholder = 'Draft will appear here';
+        textarea.disabled = recordOrEntry.status === 'sending';
+        textarea.addEventListener('input', (event) => {
+          recordOrEntry.editedText = event.target.value;
+        });
+        details.appendChild(textarea);
+
+        const controls = document.createElement('div');
+        controls.className = 'xga-deck-card-controls';
+        controls.appendChild(createModeSelect(recordOrEntry));
+
+        const primaryActions = document.createElement('div');
+        primaryActions.className = 'xga-deck-card-actions primary-row';
+        primaryActions.appendChild(createButton(
+          'Send',
+          'xga-card-btn primary',
+          () => sendDraft(recordOrEntry.postId),
+          recordOrEntry.status !== 'ready' || !normalizeWhitespace(recordOrEntry.editedText || recordOrEntry.autoText)
+        ));
+        primaryActions.appendChild(createButton(
+          'Open Post',
+          'xga-card-btn',
+          () => openPost(recordOrEntry.postId)
+        ));
+        controls.appendChild(primaryActions);
+
+        const secondaryActions = document.createElement('div');
+        secondaryActions.className = 'xga-deck-card-actions';
+        secondaryActions.appendChild(createButton(
+          'Regenerate',
+          'xga-card-btn',
+          () => regenerateDraft(recordOrEntry.postId),
+          recordOrEntry.status === 'sending'
+        ));
+        secondaryActions.appendChild(createButton(
+          'Skip',
+          'xga-card-btn danger',
+          () => skipDraft(recordOrEntry.postId),
+          recordOrEntry.status === 'sending'
+        ));
+        controls.appendChild(secondaryActions);
+        details.appendChild(controls);
+      } else if (deckKind === 'processing') {
+        const statusLine = document.createElement('div');
+        statusLine.className = 'xga-card-statusline';
+        statusLine.textContent = recordOrEntry.status === 'generating'
+          ? 'Preparing the draft right now.'
+          : 'Queued and waiting for a concurrency slot.';
+        details.appendChild(statusLine);
+
+        const actions = document.createElement('div');
+        actions.className = 'xga-deck-card-actions single-row';
+        actions.appendChild(createButton(
+          'Open Post',
+          'xga-card-btn',
+          () => openPost(recordOrEntry.postId)
+        ));
+        actions.appendChild(createButton(
+          'Skip',
+          'xga-card-btn danger',
+          () => skipDraft(recordOrEntry.postId)
+        ));
+        details.appendChild(actions);
+      } else {
+        const sentDraft = document.createElement('div');
+        sentDraft.className = 'xga-deck-card-sent';
+        sentDraft.textContent = recordOrEntry.draftText || 'Reply sent.';
+        details.appendChild(sentDraft);
+
+        const actions = document.createElement('div');
+        actions.className = 'xga-deck-card-actions single-row';
+        actions.appendChild(createButton(
+          'Open Post',
+          'xga-card-btn',
+          () => openPost(recordOrEntry.postId)
+        ));
+        details.appendChild(actions);
+      }
     }
 
-    stack.appendChild(list);
-    state.drawerRoot.appendChild(stack);
+    card.appendChild(details);
+    return card;
+  }
+
+  function buildDeck(kind, title, subtitle, items, totalCount = items.length) {
+    const deck = document.createElement('section');
+    deck.className = `xga-deck ${kind}`;
+    if (items.some((item) => item.postId === state.expandedDeckCardId)) {
+      deck.classList.add('has-expanded');
+    }
+
+    const header = document.createElement('div');
+    header.className = 'xga-deck-header';
+
+    const titleGroup = document.createElement('div');
+    titleGroup.className = 'xga-deck-title-group';
+
+    const heading = document.createElement('div');
+    heading.className = 'xga-deck-title';
+    heading.textContent = title;
+
+    const hint = document.createElement('div');
+    hint.className = 'xga-deck-hint';
+    hint.textContent = subtitle;
+
+    titleGroup.appendChild(heading);
+    titleGroup.appendChild(hint);
+
+    const count = document.createElement('span');
+    count.className = 'xga-deck-count';
+    count.textContent = String(totalCount);
+
+    header.appendChild(titleGroup);
+    header.appendChild(count);
+    deck.appendChild(header);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'xga-deck-empty';
+      empty.textContent = kind === 'sent'
+        ? `Sent ${totalCount} repl${totalCount === 1 ? 'y' : 'ies'} this session.`
+        : 'No offscreen cards right now.';
+      deck.appendChild(empty);
+      return deck;
+    }
+
+    const pile = document.createElement('div');
+    pile.className = 'xga-deck-pile';
+    items.forEach((item, index) => {
+      pile.appendChild(buildDeckCard(item, kind, index));
+    });
+    deck.appendChild(pile);
+    return deck;
+  }
+
+  function buildDeckRail(items) {
+    const { ready, processing, sent } = getDeckState(items);
+    const rail = document.createElement('div');
+    rail.className = 'xga-deck-rail';
+
+    if (ready.length > 0) {
+      rail.appendChild(buildDeck(
+        'ready',
+        'Ready',
+        'Offscreen drafts you can send right now.',
+        ready
+      ));
+    }
+
+    if (processing.length > 0) {
+      rail.appendChild(buildDeck(
+        'processing',
+        'Processing',
+        'Queued or generating while you keep scrolling.',
+        processing
+      ));
+    }
+
+    if (sent.length > 0 || state.sentCount > 0) {
+      rail.appendChild(buildDeck(
+        'sent',
+        'Sent',
+        'Replies already sent in this session.',
+        sent,
+        state.sentCount
+      ));
+    }
+
+    return rail.childElementCount > 0 ? rail : null;
+  }
+
+  function renderDeckRail(items) {
+    state.drawerRoot.innerHTML = '';
+    const rail = buildDeckRail(items);
+    if (!rail) {
+      state.drawerRoot.classList.remove('active', 'drawer-mode');
+      return;
+    }
+
+    state.drawerRoot.classList.add('active');
+    state.drawerRoot.classList.remove('drawer-mode');
+    state.drawerRoot.appendChild(rail);
   }
 
   function renderInlineCards(items) {
     state.overlayRoot.innerHTML = '';
     state.overlayRoot.classList.add('active');
-    const { mainItems, overflowItems } = getInlineLayout(items);
+    const { mainItems } = getInlineLayout(items);
     let previousBottom = Number.NEGATIVE_INFINITY;
 
     for (const item of mainItems) {
@@ -678,12 +1012,6 @@
 
       const anchoredTop = item.rect.top;
       const left = Math.min(window.innerWidth - CARD_WIDTH - 20, item.rect.right + 20);
-      card.addEventListener('pointerdown', () => {
-        state.focusedPostId = record.postId;
-      }, true);
-      card.addEventListener('focusin', () => {
-        state.focusedPostId = record.postId;
-      }, true);
       card.style.left = `${left}px`;
       card.style.top = `${anchoredTop}px`;
       card.style.opacity = `${opacity}`;
@@ -697,15 +1025,14 @@
       previousBottom = resolvedTop + card.offsetHeight;
     }
 
-    renderOverflowStack(overflowItems);
+    renderDeckRail(items);
   }
 
   function renderDrawer(items) {
     state.overlayRoot.innerHTML = '';
     state.overlayRoot.classList.remove('active');
     state.drawerRoot.innerHTML = '';
-    state.drawerRoot.classList.remove('overflow-active');
-    state.drawerRoot.classList.add('active');
+    state.drawerRoot.classList.add('active', 'drawer-mode');
 
     const list = document.createElement('div');
     list.className = 'xga-drawer-list';
@@ -717,6 +1044,11 @@
     }
 
     state.drawerRoot.appendChild(list);
+
+    const rail = buildDeckRail(items);
+    if (rail) {
+      state.drawerRoot.appendChild(rail);
+    }
   }
 
   function render(items) {
@@ -742,6 +1074,12 @@
   }
 
   async function generateQueuedDraft(record) {
+    if (isOwnPosterHandle(record.posterHandle)) {
+      record.status = 'skipped';
+      record.error = 'Skipped own post.';
+      return;
+    }
+
     state.activeGenerationCount += 1;
     state.inFlightPostIds.add(record.postId);
     record.status = 'generating';
@@ -754,7 +1092,6 @@
         type: 'GENERATE_DRAFT',
         mode: 'auto',
         phase: 'quick',
-        provider: 'gemini-local',
         tweetText: requestedText,
         context: requestedContext,
         requestId: createRequestId()
@@ -766,12 +1103,15 @@
         record.baseTone = response.baseTone;
         record.autoText = response.text;
         record.editedText = response.text;
+        record.modelLabel = response.modelLabel || record.modelLabel;
         record.error = '';
       } else if (response.status === 'skipped') {
         record.status = 'skipped';
+        record.modelLabel = response.modelLabel || record.modelLabel;
         record.error = response.reason || 'Skipped';
       } else {
         record.status = 'failed';
+        record.modelLabel = response.modelLabel || record.modelLabel;
         record.error = response.reason || 'Draft generation failed';
       }
     } catch (error) {
@@ -800,17 +1140,22 @@
   function skipDraft(postId) {
     const record = state.drafts.get(postId);
     if (!record || record.status === 'sending') return;
-    if (state.focusedPostId === postId) state.focusedPostId = '';
+    if (state.expandedDeckCardId === postId) state.expandedDeckCardId = '';
     record.status = 'skipped';
     record.error = 'Skipped manually.';
     render(collectCandidateArticles());
   }
 
-  async function regenerateDraft(postId, provider) {
+  async function regenerateDraft(postId) {
     const record = state.drafts.get(postId);
     if (!record || isLockedDraftStatus(record.status)) return;
+    if (isOwnPosterHandle(record.posterHandle)) {
+      record.status = 'skipped';
+      record.error = 'Skipped own post.';
+      render(collectCandidateArticles());
+      return;
+    }
 
-    state.focusedPostId = postId;
     record.status = 'generating';
     record.error = '';
     const requestedText = record.text;
@@ -827,7 +1172,6 @@
         mode: mode === 'auto' ? 'auto' : 'tone',
         tone: mode === 'auto' ? null : mode,
         phase: 'full',
-        provider,
         tweetText: requestedText,
         context: requestedContext,
         currentDraft,
@@ -842,12 +1186,15 @@
         record.baseTone = response.baseTone || record.baseTone;
         record.autoText = response.text;
         record.editedText = response.text;
+        record.modelLabel = response.modelLabel || record.modelLabel;
         record.error = '';
       } else if (response.status === 'skipped') {
         record.status = 'skipped';
+        record.modelLabel = response.modelLabel || record.modelLabel;
         record.error = response.reason || 'Skipped';
       } else {
         record.status = 'failed';
+        record.modelLabel = response.modelLabel || record.modelLabel;
         record.error = response.reason || 'Draft generation failed';
       }
     } catch (error) {
@@ -877,6 +1224,20 @@
     return root.querySelector('[data-testid="tweetButton"]') ||
       root.querySelector('[data-testid="tweetButtonInline"]') ||
       root.querySelector('button[data-testid*="tweet"]');
+  }
+
+  function clickElement(element) {
+    if (!element) return;
+    if (typeof element.click === 'function') {
+      element.click();
+      return;
+    }
+
+    element.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    }));
   }
 
   function insertTextIntoComposer(textarea, text) {
@@ -936,7 +1297,7 @@
     }
 
     const knownDialogs = new Set(Array.from(document.querySelectorAll('[role="dialog"]')));
-    replyButton.click();
+    clickElement(replyButton);
 
     return waitFor(() => {
       const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
@@ -954,11 +1315,19 @@
 
   async function sendDraft(postId) {
     const record = state.drafts.get(postId);
-    if (!record || !record.article) return;
+    if (!record) return;
 
-    state.focusedPostId = postId;
     const finalText = normalizeWhitespace(record.editedText || record.autoText);
     if (!finalText) return;
+
+    const article = resolveArticle(postId, record.article);
+    if (!article) {
+      record.status = 'failed';
+      record.error = 'This post is no longer mounted in the feed. Use Open Post first.';
+      render(collectCandidateArticles());
+      return;
+    }
+    record.article = article;
 
     record.status = 'sending';
     record.error = '';
@@ -968,11 +1337,16 @@
       const composer = await openReplyComposer(record.article);
       insertTextIntoComposer(composer.textarea, finalText);
       await waitFor(() => normalizeWhitespace(composer.textarea.innerText || composer.textarea.textContent || '') === finalText, 2500).catch(() => true);
-      composer.sendButton.click();
+      const sendButton = await waitFor(() => {
+        const nextButton = findSendButton(composer.dialog);
+        return nextButton && !isElementDisabled(nextButton) ? nextButton : null;
+      }, 5000);
+      clickElement(sendButton);
       await waitFor(() => !composer.dialog.isConnected, 8000);
 
       record.status = 'sent';
       record.error = '';
+      rememberSentDraft(record, finalText);
 
       if (record.baseTone && record.autoText) {
         chrome.runtime.sendMessage({
@@ -998,6 +1372,7 @@
   function refresh() {
     const items = collectCandidateArticles();
     syncDraftsWithFeed(items);
+    removeOwnDrafts();
     computePriority(items);
     if (!isUserInteractingWithCard()) {
       render(items);
@@ -1011,6 +1386,25 @@
     requestAnimationFrame(() => {
       state.refreshScheduled = false;
       refresh();
+    });
+  }
+
+  async function loadContentSettings() {
+    try {
+      const { settings } = await chrome.storage.local.get('settings');
+      state.ownUsername = settings?.username || '';
+    } catch (error) {
+      console.warn(LOG_PREFIX, 'Could not load settings', error);
+      state.ownUsername = '';
+    }
+  }
+
+  function observeSettings() {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes.settings) return;
+      state.ownUsername = changes.settings.newValue?.username || '';
+      removeOwnDrafts();
+      scheduleRefresh();
     });
   }
 
@@ -1030,8 +1424,10 @@
     console.log(LOG_PREFIX, 'Feed observer started');
   }
 
-  function init() {
+  async function init() {
     console.log(LOG_PREFIX, 'Content script initialized on', window.location.href);
+    await loadContentSettings();
+    observeSettings();
     ensureUiRoots();
     observeFeed();
   }

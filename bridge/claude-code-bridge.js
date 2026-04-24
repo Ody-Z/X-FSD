@@ -6,6 +6,15 @@ import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { CLAUDE_CODE_HAIKU_MODEL, buildUserMessage } from '../lib/api.js';
+import {
+  createEstimatedTokenUsage,
+  extractGenericTokenUsage,
+  summarizeTokenUsage
+} from '../lib/token-usage.js';
+import {
+  DEFAULT_TOKEN_USAGE_CSV_PATH,
+  createTokenUsageCsvLogger
+} from './token-usage-csv.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -14,6 +23,9 @@ const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_CLAUDE_CLI_TIMEOUT_MS || '2500
 const DEFAULT_MODEL = process.env.XGA_CLAUDE_CODE_MODEL || CLAUDE_CODE_HAIKU_MODEL;
 const DEFAULT_CLAUDE_BIN = process.env.XGA_CLAUDE_BIN || 'claude';
 const TRACE_LOG_PATH = process.env.XGA_CLAUDE_TRACE_LOG || '/tmp/xga-claude-code-bridge.log';
+const TOKEN_USAGE_CSV_PATH = process.env.XGA_CLAUDE_TOKEN_USAGE_CSV ||
+  process.env.XGA_TOKEN_USAGE_CSV ||
+  DEFAULT_TOKEN_USAGE_CSV_PATH;
 const PROMPT_DUMP_PATH = process.env.XGA_CLAUDE_PROMPT_DUMP || '';
 const CLAUDE_STATUS_TTL_MS = 10000;
 const BRIDGE_WORKDIR = path.join(os.tmpdir(), 'xga-claude-code-bridge', 'workdir');
@@ -23,6 +35,7 @@ let claudeStatusCache = {
   value: null,
   expiresAt: 0
 };
+const tokenUsageCsv = createTokenUsageCsvLogger(TOKEN_USAGE_CSV_PATH);
 
 function nowNs() {
   return process.hrtime.bigint();
@@ -139,7 +152,7 @@ function parseJsonObject(stdout, errorMessage) {
   }
 }
 
-function parseClaudeJsonOutput(stdout) {
+function parseClaudeJsonOutputResult(stdout) {
   const payload = parseJsonObject(stdout, 'Claude Code returned invalid JSON output');
 
   if (payload?.is_error === true) {
@@ -155,7 +168,14 @@ function parseClaudeJsonOutput(stdout) {
     throw new BridgeError('cli_empty_response', 'Claude Code returned no text response', 502);
   }
 
-  return text;
+  return {
+    text,
+    tokenUsage: summarizeTokenUsage(extractGenericTokenUsage(payload, 'claude-code'))
+  };
+}
+
+function parseClaudeJsonOutput(stdout) {
+  return parseClaudeJsonOutputResult(stdout).text;
 }
 
 function parseClaudeAuthStatus(stdout) {
@@ -352,12 +372,23 @@ async function invokeClaudeCode({
     logRequest(requestId, `Claude Code process finished in ${formatDurationNs(execStartedAt)}`);
 
     const parseStartedAt = nowNs();
-    const text = parseClaudeJsonOutput(stdout);
-    logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
-      responseLength: text.length
+    const result = parseClaudeJsonOutputResult(stdout);
+    const tokenUsage = result.tokenUsage || createEstimatedTokenUsage({
+      systemPrompt,
+      userPrompt: resolvedUserPrompt,
+      outputText: result.text
     });
-    logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`);
-    return text;
+    logRequest(requestId, `Parsed CLI output in ${formatDurationNs(parseStartedAt)}`, {
+      responseLength: result.text.length,
+      tokenUsage
+    });
+    logRequest(requestId, `Total bridge time ${formatDurationNs(startedAt)}`, {
+      tokenUsage
+    });
+    return {
+      text: result.text,
+      tokenUsage
+    };
   } catch (error) {
     logRequest(requestId, `Claude Code failed after ${formatDurationNs(startedAt)}`, {
       code: error?.code,
@@ -389,7 +420,8 @@ function readJsonBody(req) {
 
 function createBridgeServer({
   invokeReply = invokeClaudeCode,
-  getStatus = getClaudeStatus
+  getStatus = getClaudeStatus,
+  tokenUsageCsvLogger = tokenUsageCsv
 } = {}) {
   return http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
@@ -447,18 +479,57 @@ function createBridgeServer({
           throw new BridgeError('missing_user_prompt', 'userPrompt or tweetText is required', 400);
         }
 
-        const text = await invokeReply({
+        const model = typeof body.model === 'string' && body.model.trim() ? body.model : DEFAULT_MODEL;
+        const durationStartedAt = Date.now();
+        const replyResult = await invokeReply({
           systemPrompt: body.systemPrompt,
           userPrompt: resolvedUserPrompt,
           tweetText: body.tweetText,
           context: body.context,
           requestId,
-          model: typeof body.model === 'string' && body.model.trim() ? body.model : DEFAULT_MODEL,
+          model,
           timeoutMs: Number.isFinite(body.timeoutMs) ? body.timeoutMs : DEFAULT_TIMEOUT_MS
         });
+        const text = typeof replyResult === 'string' ? replyResult.trim() : replyResult.text?.trim();
+        if (!text) {
+          throw new BridgeError('cli_empty_response', 'Claude Code returned no text response', 502);
+        }
+        const userPrompt = resolvedUserPrompt || buildUserMessage(body.tweetText, body.context);
+        const tokenUsage = summarizeTokenUsage(
+          typeof replyResult === 'string' ? null : replyResult.tokenUsage
+        ) || createEstimatedTokenUsage({
+          systemPrompt: body.systemPrompt,
+          userPrompt,
+          outputText: text
+        });
 
+        logRequest(requestId, 'Token usage', {
+          ...tokenUsage,
+          csvPath: TOKEN_USAGE_CSV_PATH
+        });
+        if (tokenUsageCsvLogger) {
+          void tokenUsageCsvLogger.append({
+            requestId,
+            provider: 'claude-code-local',
+            model,
+            mode: typeof body.mode === 'string' ? body.mode : '',
+            phase: typeof body.phase === 'string' ? body.phase : '',
+            status: 'ready',
+            tokenUsage,
+            promptChars: `${body.systemPrompt}\n${userPrompt}`.length,
+            systemPromptChars: body.systemPrompt.length,
+            userPromptChars: userPrompt.length,
+            replyChars: text.length,
+            durationMs: Date.now() - durationStartedAt
+          }).catch((error) => {
+            logRequest(requestId, 'Failed to append token usage CSV', {
+              error: error.message,
+              csvPath: TOKEN_USAGE_CSV_PATH
+            });
+          });
+        }
         logRequest(requestId, `HTTP response sent in ${formatDurationNs(requestStartedAt)}`);
-        sendJson(res, 200, { text });
+        sendJson(res, 200, { text, tokenUsage });
         return;
       }
 
@@ -482,7 +553,8 @@ async function startBridgeServer() {
   logRequest('system', 'Bridge started', {
     port: DEFAULT_PORT,
     model: DEFAULT_MODEL,
-    traceLogPath: TRACE_LOG_PATH
+    traceLogPath: TRACE_LOG_PATH,
+    tokenUsageCsvPath: TOKEN_USAGE_CSV_PATH
   });
   console.log(`Claude Code bridge listening on http://127.0.0.1:${DEFAULT_PORT}`);
   return server;
@@ -516,6 +588,7 @@ export {
   mapCliExecutionError,
   parseClaudeAuthStatus,
   parseClaudeJsonOutput,
+  parseClaudeJsonOutputResult,
   PROMPT_DUMP_PATH,
   startBridgeServer
 };
