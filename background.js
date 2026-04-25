@@ -69,6 +69,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'OPEN_POST_TAB') {
+    handleOpenPostTab(msg.url).then(sendResponse).catch((error) => sendResponse({
+      ok: false,
+      reason: error.message
+    }));
+    return true;
+  }
+
   if (msg.type === 'GENERATE_DRAFT') {
     handleGenerateDraft(msg).then(sendResponse).catch((error) => sendResponse({
       status: 'failed',
@@ -95,6 +103,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
+
+function isAllowedXUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' &&
+      (parsed.hostname === 'x.com' || parsed.hostname.endsWith('.x.com'));
+  } catch {
+    return false;
+  }
+}
+
+async function handleOpenPostTab(url) {
+  if (!isAllowedXUrl(url)) {
+    throw new Error('Refusing to open a non-X post URL.');
+  }
+
+  await chrome.tabs.create({ url, active: true });
+  return { ok: true };
+}
 
 function getDefaultSettings() {
   return {

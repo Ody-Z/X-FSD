@@ -866,6 +866,20 @@
     return document.querySelector(`a[href*="/status/${postId}"]`)?.closest('article') || null;
   }
 
+  async function openTweetUrlInNewTab(tweetUrl) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'OPEN_POST_TAB',
+        url: tweetUrl
+      });
+      if (response?.ok) return;
+      throw new Error(response?.reason || 'Background tab open failed.');
+    } catch (error) {
+      console.warn(LOG_PREFIX, 'Could not open post via background tab API', error);
+      window.open(tweetUrl, '_blank', 'noopener,noreferrer');
+    }
+  }
+
   async function openPost(postId) {
     const record = state.drafts.get(postId);
     const article = resolveArticle(postId, record?.article || null);
@@ -889,7 +903,7 @@
       }
     }
 
-    window.location.assign(tweetUrl);
+    await openTweetUrlInNewTab(tweetUrl);
   }
 
   function rememberSentDraft(record, finalText) {
