@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "X Growth Assistant",
   "version": "1.0.0",
-  "description": "Generate tone-matched replies on X",
+  "description": "Generate voice-matched replies on X",
   "permissions": [
     "storage",
     "activeTab",

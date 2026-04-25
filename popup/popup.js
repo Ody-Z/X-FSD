@@ -1,66 +1,24 @@
-import { CLAUDE_CODE_LOCAL_MODEL, GEMINI_CLI_LOCAL_MODEL, TONE_DEFAULTS } from '../lib/api.js';
+import { CLAUDE_CODE_LOCAL_MODEL, DEFAULT_VOICE_PROFILE, GEMINI_CLI_LOCAL_MODEL } from '../lib/api.js';
 
-const DB_NAME = 'xGrowthFS';
-const STORE_NAME = 'dirHandles';
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function saveDirHandle(handle) {
-  const db = await openDB();
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  tx.objectStore(STORE_NAME).put(handle, 'toneDir');
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function getDirHandle() {
-  const db = await openDB();
-  const tx = db.transaction(STORE_NAME, 'readonly');
-  const req = tx.objectStore(STORE_NAME).get('toneDir');
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function verifyPermission(handle) {
-  if ((await handle.queryPermission({ mode: 'readwrite' })) === 'granted') return true;
-  return (await handle.requestPermission({ mode: 'readwrite' })) === 'granted';
-}
-
-async function readToneFile(dirHandle, tone) {
-  try {
-    const fileHandle = await dirHandle.getFileHandle(`${tone}.json`);
-    const file = await fileHandle.getFile();
-    return JSON.parse(await file.text());
-  } catch {
-    return null;
-  }
-}
-
-async function writeToneFile(dirHandle, tone, data) {
-  const fileHandle = await dirHandle.getFileHandle(`${tone}.json`, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(JSON.stringify(data, null, 2));
-  await writable.close();
-}
+let generatedPromptSnapshot = '';
+let canAutoSyncPrompt = true;
 
 // --- Tab Navigation ---
+function activateTab(tabName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+  const tab = document.querySelector(`[data-tab="${tabName}"]`);
+  const content = document.getElementById(tabName);
+  if (!tab || !content) return;
+
+  tab.classList.add('active');
+  content.classList.add('active');
+}
+
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById(tab.dataset.tab).classList.add('active');
+    activateTab(tab.dataset.tab);
   });
 });
 
@@ -75,10 +33,10 @@ async function loadSettings() {
   document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
   document.getElementById('moonshotEndpoint').value = settings.moonshotEndpoint || 'https://api.moonshot.cn/v1';
   updateModelHintAndFields(settings.activeModel || 'claude-haiku');
+  loadVoiceProfile(settings.voiceProfile);
 
-  const handle = await getDirHandle();
-  if (handle) {
-    document.getElementById('folderPath').textContent = handle.name;
+  if (!settings.onboardingCompleted) {
+    activateTab('onboarding');
   }
 }
 
@@ -175,133 +133,122 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
   setTimeout(() => { status.textContent = ''; }, 2000);
 });
 
-document.getElementById('pickFolder').addEventListener('click', async () => {
+// --- Onboarding ---
+function getVoiceProfile() {
+  return {
+    displayName: document.getElementById('voiceDisplayName').value.trim(),
+    identity: document.getElementById('voiceIdentity').value.trim(),
+    viewpoints: document.getElementById('voiceViewpoints').value.trim(),
+    toneRules: document.getElementById('voiceToneRules').value.trim(),
+    avoid: document.getElementById('voiceAvoid').value.trim(),
+    writingSamples: document.getElementById('voiceSamples').value.trim(),
+    systemPrompt: document.getElementById('voiceSystemPrompt').value.trim()
+  };
+}
+
+function loadVoiceProfile(profile = {}) {
+  const voiceProfile = { ...DEFAULT_VOICE_PROFILE, ...(profile || {}) };
+  const generatedPrompt = buildVoiceSystemPrompt(voiceProfile);
+  document.getElementById('voiceDisplayName').value = voiceProfile.displayName || '';
+  document.getElementById('voiceIdentity').value = voiceProfile.identity || '';
+  document.getElementById('voiceViewpoints').value = voiceProfile.viewpoints || '';
+  document.getElementById('voiceToneRules').value = voiceProfile.toneRules || '';
+  document.getElementById('voiceAvoid').value = voiceProfile.avoid || '';
+  document.getElementById('voiceSamples').value = voiceProfile.writingSamples || '';
+  setVoiceSystemPrompt(voiceProfile.systemPrompt || generatedPrompt, {
+    autoSync: !voiceProfile.systemPrompt || voiceProfile.systemPrompt === generatedPrompt
+  });
+}
+
+function toBulletLines(text) {
+  return (text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => `- ${line}`)
+    .join('\n');
+}
+
+function buildSection(label, text) {
+  const bullets = toBulletLines(text);
+  return bullets ? `${label}:\n${bullets}` : '';
+}
+
+function buildVoiceSystemPrompt(profile) {
+  const displayName = profile.displayName || 'the user';
+  return [
+    `Write replies as ${displayName}.`,
+    buildSection('Identity', profile.identity),
+    buildSection('Viewpoints to preserve', profile.viewpoints),
+    buildSection('Tone and style rules', profile.toneRules),
+    buildSection('Avoid', profile.avoid),
+    buildSection('Reference writing samples', profile.writingSamples),
+    'When the post conflicts with these viewpoints, reply with nuance instead of copying the post author.',
+    'Keep the reply compact, casual, and specific to the post.'
+  ].filter(Boolean).join('\n\n');
+}
+
+function setVoiceSystemPrompt(prompt, { autoSync = true } = {}) {
+  generatedPromptSnapshot = prompt;
+  canAutoSyncPrompt = autoSync;
+  document.getElementById('voiceSystemPrompt').value = prompt;
+}
+
+function syncGeneratedVoicePrompt() {
+  if (!canAutoSyncPrompt) return;
+  const promptField = document.getElementById('voiceSystemPrompt');
+  if (promptField.value && promptField.value !== generatedPromptSnapshot) {
+    canAutoSyncPrompt = false;
+    return;
+  }
+  setVoiceSystemPrompt(buildVoiceSystemPrompt(getVoiceProfile()));
+}
+
+document.getElementById('buildVoicePrompt').addEventListener('click', () => {
+  const profile = getVoiceProfile();
+  setVoiceSystemPrompt(buildVoiceSystemPrompt(profile));
+});
+
+document.getElementById('resetVoicePrompt').addEventListener('click', () => {
+  loadVoiceProfile(DEFAULT_VOICE_PROFILE);
+});
+
+document.getElementById('saveVoiceProfile').addEventListener('click', async () => {
+  const status = document.getElementById('onboardingStatus');
+  const profile = getVoiceProfile();
+  const generatedPrompt = buildVoiceSystemPrompt(profile);
+  const shouldUseGeneratedPrompt = canAutoSyncPrompt && (!profile.systemPrompt || profile.systemPrompt === generatedPromptSnapshot);
+  const voiceProfile = {
+    ...profile,
+    systemPrompt: shouldUseGeneratedPrompt ? generatedPrompt : profile.systemPrompt
+  };
+
   try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    await saveDirHandle(handle);
-    document.getElementById('folderPath').textContent = handle.name;
+    await StorageHelper.saveSettings({
+      voiceProfile,
+      onboardingCompleted: true
+    });
+    setVoiceSystemPrompt(voiceProfile.systemPrompt, { autoSync: shouldUseGeneratedPrompt });
+    showStatus(status, 'Voice profile saved', 'success');
   } catch (e) {
-    if (e.name !== 'AbortError') {
-      console.error('Folder picker error:', e);
-    }
+    showStatus(status, e.message, 'error');
   }
 });
 
-// --- Tones ---
-async function renderTones() {
-  const container = document.getElementById('tonesList');
-  const handle = await getDirHandle();
-
-  if (!handle) {
-    container.innerHTML = '<div class="empty-state">Pick a folder in Settings first</div>';
-    return;
-  }
-
-  const granted = await verifyPermission(handle);
-  if (!granted) {
-    container.innerHTML = '<div class="empty-state">Folder access denied. Re-pick in Settings.</div>';
-    return;
-  }
-
-  const tones = Object.keys(TONE_DEFAULTS);
-  const cards = [];
-
-  for (const tone of tones) {
-    const data = await readToneFile(handle, tone);
-    const count = data?.comparisons?.length || 0;
-    cards.push(`
-      <div class="tone-card">
-        <span class="tone-name">${tone}</span>
-        <span class="tone-count">${count}/15 comparisons</span>
-      </div>`);
-  }
-
-  container.innerHTML = cards.length ? cards.join('') : '<div class="empty-state">No tone files found. Click Initialize below.</div>';
-}
-
-document.getElementById('initTones').addEventListener('click', async () => {
-  const status = document.getElementById('tonesStatus');
-  const handle = await getDirHandle();
-
-  if (!handle) {
-    showStatus(status, 'Pick a folder in Settings first', 'error');
-    return;
-  }
-
-  const granted = await verifyPermission(handle);
-  if (!granted) {
-    showStatus(status, 'Folder access denied', 'error');
-    return;
-  }
-
-  for (const [tone, prompt] of Object.entries(TONE_DEFAULTS)) {
-    const existing = await readToneFile(handle, tone);
-    if (!existing) {
-      await writeToneFile(handle, tone, { prompt, comparisons: [] });
-    }
-  }
-
-  showStatus(status, 'Tone files initialized', 'success');
-  renderTones();
+[
+  'voiceDisplayName',
+  'voiceIdentity',
+  'voiceViewpoints',
+  'voiceToneRules',
+  'voiceAvoid',
+  'voiceSamples'
+].forEach((id) => {
+  document.getElementById(id).addEventListener('input', syncGeneratedVoicePrompt);
 });
 
-// --- Tone File <-> Chrome Storage Sync ---
-async function syncTonesToStorage() {
-  const handle = await getDirHandle();
-  if (!handle) return;
-
-  try {
-    const granted = await verifyPermission(handle);
-    if (!granted) return;
-  } catch {
-    return;
-  }
-
-  for (const tone of Object.keys(TONE_DEFAULTS)) {
-    const fileData = await readToneFile(handle, tone);
-    if (!fileData) continue;
-
-    const storageKey = `tone_${tone}`;
-    const result = await chrome.storage.local.get(storageKey);
-    const storageData = result[storageKey];
-
-    if (storageData && storageData.comparisons?.length > (fileData.comparisons?.length || 0)) {
-      const merged = { ...fileData, comparisons: storageData.comparisons.slice(-15) };
-      await writeToneFile(handle, tone, merged);
-      await chrome.storage.local.set({ [storageKey]: merged });
-    } else {
-      await chrome.storage.local.set({ [storageKey]: fileData });
-    }
-  }
-}
-
-async function syncStorageToFiles() {
-  const handle = await getDirHandle();
-  if (!handle) return;
-
-  try {
-    const granted = await verifyPermission(handle);
-    if (!granted) return;
-  } catch {
-    return;
-  }
-
-  for (const tone of Object.keys(TONE_DEFAULTS)) {
-    const storageKey = `tone_${tone}`;
-    const result = await chrome.storage.local.get(storageKey);
-    const storageData = result[storageKey];
-    if (!storageData) continue;
-
-    const fileData = await readToneFile(handle, tone);
-    if (fileData) {
-      const merged = {
-        prompt: fileData.prompt,
-        comparisons: storageData.comparisons?.slice(-15) || []
-      };
-      await writeToneFile(handle, tone, merged);
-    }
-  }
-}
+document.getElementById('voiceSystemPrompt').addEventListener('input', (event) => {
+  canAutoSyncPrompt = event.target.value === generatedPromptSnapshot;
+});
 
 // --- Helpers ---
 function showStatus(el, msg, type) {
@@ -310,11 +257,5 @@ function showStatus(el, msg, type) {
   setTimeout(() => { el.textContent = ''; }, 3000);
 }
 
-// --- Tab activation on tones tab click ---
-document.querySelector('[data-tab="tones"]').addEventListener('click', () => {
-  syncStorageToFiles().then(renderTones);
-});
-
 // --- Init ---
 loadSettings();
-syncTonesToStorage();

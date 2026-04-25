@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_VOICE_PROFILE,
   DRAFT_PHASE_FULL,
   DRAFT_PHASE_QUICK,
   TONE_DEFAULTS,
@@ -36,6 +37,18 @@ describe('buildSystemPrompt', () => {
     assert.ok(result.includes('Learn from the differences'));
     assert.ok(result.includes('orig'));
     assert.ok(result.includes('user'));
+  });
+
+  it('uses a custom voice profile when provided', () => {
+    const result = buildSystemPrompt('smart', null, {
+      voiceProfile: {
+        ...DEFAULT_VOICE_PROFILE,
+        systemPrompt: 'Write as Alex: skeptical, concise, and pro open-source.'
+      }
+    });
+
+    assert.ok(result.includes('Write as Alex'));
+    assert.ok(!result.includes('Ody is a Gen Z AI native builder'));
   });
 });
 
@@ -100,6 +113,32 @@ describe('adaptive draft prompts', () => {
     assert.ok(prompt.systemPrompt.includes('Style references from the user'));
     assert.ok(prompt.systemPrompt.includes('Base tone: smart'));
   });
+
+  it('full phase includes auto comparison references and custom voice', () => {
+    const prompt = buildAdaptiveDraftPrompt({
+      tweetText: 'A high quality thread',
+      context: { posterHandle: '@a', threadTweets: ['A high quality thread'] },
+      phase: DRAFT_PHASE_FULL,
+      voiceProfile: {
+        ...DEFAULT_VOICE_PROFILE,
+        systemPrompt: 'Write as Alex with high-conviction product taste.'
+      },
+      autoPromptData: {
+        comparisons: [
+          {
+            strategyType: 'hot_take',
+            originalPost: 'orig',
+            aiGenerated: 'ai',
+            userFinal: 'user'
+          }
+        ]
+      }
+    });
+
+    assert.ok(prompt.systemPrompt.includes('Write as Alex'));
+    assert.ok(prompt.systemPrompt.includes('Strategy: hot_take'));
+    assert.ok(prompt.systemPrompt.includes('user'));
+  });
 });
 
 describe('manual draft prompts', () => {
@@ -137,6 +176,26 @@ describe('detectAutoDraftSkipReason', () => {
   it('keeps substantive posts', () => {
     assert.equal(
       detectAutoDraftSkipReason('Interesting tradeoff: lower latency models often need stricter prompt contracts.'),
+      ''
+    );
+  });
+
+  it('skips posts older than 2 hours when timestamp is available', () => {
+    assert.match(
+      detectAutoDraftSkipReason(
+        'Interesting tradeoff: lower latency models often need stricter prompt contracts.',
+        { createdAt: Date.now() - (2 * 60 * 60 * 1000) - 1000 }
+      ),
+      /older than 2 hours/
+    );
+  });
+
+  it('keeps posts within 2 hours when timestamp is available', () => {
+    assert.equal(
+      detectAutoDraftSkipReason(
+        'Interesting tradeoff: lower latency models often need stricter prompt contracts.',
+        { createdAt: new Date(Date.now() - 30 * 60 * 1000).toISOString() }
+      ),
       ''
     );
   });

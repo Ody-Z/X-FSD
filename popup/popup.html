@@ -12,7 +12,7 @@
       <h1>X Growth Assistant</h1>
       <nav class="tabs">
         <button class="tab active" data-tab="settings">Settings</button>
-        <button class="tab" data-tab="tones">Tones</button>
+        <button class="tab" data-tab="onboarding">Onboarding</button>
       </nav>
     </header>
 
@@ -39,7 +39,7 @@
           <input type="checkbox" id="autoDraftsEnabled">
           <span>Enable feed-native auto draft queue</span>
         </label>
-        <p class="hint">Auto drafts always use Gemini CLI Local as the queue engine. Claude Code Local stays available for manual regenerate.</p>
+        <p class="hint">Auto drafts choose the reply strategy for each post and use your saved voice profile.</p>
       </div>
       <div class="field model-field" id="anthropicApiKeyField">
         <label for="anthropicApiKey">Anthropic API Key</label>
@@ -60,23 +60,62 @@
           <option value="https://api.moonshot.ai/v1">International (api.moonshot.ai)</option>
         </select>
       </div>
-      <div class="field">
-        <label>Tone Files Folder</label>
-        <div class="folder-row">
-          <span id="folderPath" class="folder-path">No folder selected</span>
-          <button id="pickFolder" class="btn btn-sm">Pick Folder</button>
-        </div>
-      </div>
       <button id="saveSettings" class="btn btn-primary">Save Settings</button>
       <div id="settingsStatus" class="status"></div>
     </section>
 
-    <!-- Tones Tab -->
-    <section id="tones" class="tab-content">
-      <p class="hint">Tone files are stored in your chosen folder. Each tone has a JSON file with a <code>prompt</code> you can edit and a <code>comparisons</code> array that tracks AI vs your edits (max 15).</p>
-      <div id="tonesList" class="tones-list"></div>
-      <button id="initTones" class="btn btn-primary">Initialize Tone Files</button>
-      <div id="tonesStatus" class="status"></div>
+    <!-- Onboarding Tab -->
+    <section id="onboarding" class="tab-content">
+      <div class="onboarding-steps" aria-label="Onboarding steps">
+        <span class="step-chip">1 Voice</span>
+        <span class="step-chip">2 Views</span>
+        <span class="step-chip">3 Rules</span>
+        <span class="step-chip">4 Prompt</span>
+      </div>
+
+      <div class="field">
+        <label for="voiceDisplayName">Name</label>
+        <input type="text" id="voiceDisplayName" placeholder="Your name or handle">
+      </div>
+
+      <div class="field">
+        <label for="voiceIdentity">Identity</label>
+        <textarea id="voiceIdentity" rows="4" placeholder="Builder, investor, researcher, founder, designer..."></textarea>
+        <p class="hint">Add one fact per line. These facts help the model know who it is speaking as.</p>
+      </div>
+
+      <div class="field">
+        <label for="voiceViewpoints">Viewpoints</label>
+        <textarea id="voiceViewpoints" rows="4" placeholder="Beliefs, strong opinions, recurring takes, things you usually agree or disagree with."></textarea>
+      </div>
+
+      <div class="field">
+        <label for="voiceToneRules">Tone Rules</label>
+        <textarea id="voiceToneRules" rows="4" placeholder="Short lines, casual punctuation, direct takes, questions you like to ask."></textarea>
+      </div>
+
+      <div class="field">
+        <label for="voiceAvoid">Avoid</label>
+        <textarea id="voiceAvoid" rows="3" placeholder="Words, formats, claims, jokes, or attitudes that should not sound like you."></textarea>
+      </div>
+
+      <div class="field">
+        <label for="voiceSamples">Writing Samples</label>
+        <textarea id="voiceSamples" rows="5" placeholder="Paste 3-5 replies or posts that sound like you."></textarea>
+      </div>
+
+      <div class="voice-actions">
+        <button id="buildVoicePrompt" class="btn">Build Prompt</button>
+        <button id="resetVoicePrompt" class="btn btn-secondary">Reset</button>
+      </div>
+
+      <div class="field prompt-field">
+        <label for="voiceSystemPrompt">System Prompt</label>
+        <textarea id="voiceSystemPrompt" rows="9" spellcheck="false"></textarea>
+      </div>
+
+      <button id="saveVoiceProfile" class="btn btn-primary">Save Voice Profile</button>
+      <div id="onboardingStatus" class="status"></div>
     </section>
   </div>
   <script src="../utils/storage.js"></script>

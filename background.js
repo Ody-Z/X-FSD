@@ -1,6 +1,7 @@
 import {
   CLAUDE_CODE_HAIKU_MODEL,
   CLAUDE_CODE_LOCAL_MODEL,
+  DEFAULT_VOICE_PROFILE,
   DRAFT_PHASE_FULL,
   DRAFT_PHASE_QUICK,
   GEMINI_CLI_MODEL,
@@ -28,6 +29,11 @@ const SETTINGS_CACHE = {
   value: null
 };
 const TONE_CACHE = new Map();
+const AUTO_PROMPT_CACHE = {
+  value: null
+};
+const AUTO_PROMPT_DATA_KEY = 'prompt_auto';
+const MAX_AUTO_COMPARISONS = 25;
 const QUICK_DRAFT_TIMEOUT_MS = 90000;
 const FULL_DRAFT_TIMEOUT_MS = 120000;
 
@@ -53,6 +59,7 @@ function logRequest(requestId, message, extra) {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
   if (changes.settings) SETTINGS_CACHE.value = null;
+  if (changes[AUTO_PROMPT_DATA_KEY]) AUTO_PROMPT_CACHE.value = null;
 
   for (const key of Object.keys(changes)) {
     if (key.startsWith('tone_')) {
@@ -96,14 +103,24 @@ function getDefaultSettings() {
     geminiApiKey: '',
     activeModel: GEMINI_CLI_LOCAL_MODEL,
     username: '',
-    autoDraftsEnabled: true
+    autoDraftsEnabled: true,
+    onboardingCompleted: false,
+    voiceProfile: DEFAULT_VOICE_PROFILE
   };
 }
 
 async function getSettings() {
   if (SETTINGS_CACHE.value) return SETTINGS_CACHE.value;
   const { settings } = await chrome.storage.local.get('settings');
-  SETTINGS_CACHE.value = { ...getDefaultSettings(), ...settings };
+  const defaults = getDefaultSettings();
+  SETTINGS_CACHE.value = {
+    ...defaults,
+    ...settings,
+    voiceProfile: {
+      ...defaults.voiceProfile,
+      ...(settings?.voiceProfile || {})
+    }
+  };
   return SETTINGS_CACHE.value;
 }
 
@@ -120,6 +137,36 @@ async function getAdaptiveToneDataMap() {
   const tones = ['supportive', 'question', 'smart', 'funny'];
   const entries = await Promise.all(tones.map(async (tone) => [tone, await getToneData(tone)]));
   return Object.fromEntries(entries);
+}
+
+function normalizeAutoPromptData(data) {
+  return {
+    comparisons: Array.isArray(data?.comparisons)
+      ? data.comparisons.slice(-MAX_AUTO_COMPARISONS)
+      : []
+  };
+}
+
+async function getAutoPromptData() {
+  if (AUTO_PROMPT_CACHE.value) return AUTO_PROMPT_CACHE.value;
+
+  const result = await chrome.storage.local.get(AUTO_PROMPT_DATA_KEY);
+  if (result[AUTO_PROMPT_DATA_KEY]) {
+    AUTO_PROMPT_CACHE.value = normalizeAutoPromptData(result[AUTO_PROMPT_DATA_KEY]);
+    return AUTO_PROMPT_CACHE.value;
+  }
+
+  const legacyToneData = await getAdaptiveToneDataMap();
+  const comparisons = Object.entries(legacyToneData)
+    .flatMap(([tone, data]) => (data.comparisons || []).map((entry) => ({
+      ...entry,
+      baseTone: entry.baseTone || tone
+    })))
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+    .slice(-MAX_AUTO_COMPARISONS);
+
+  AUTO_PROMPT_CACHE.value = { comparisons };
+  return AUTO_PROMPT_CACHE.value;
 }
 
 function resolvePhaseTimeout(phase) {
@@ -256,12 +303,13 @@ async function handleGenerateAutoDraft(msg, requestId, settings, modelTarget) {
   }
 
   const phase = msg.phase === DRAFT_PHASE_FULL ? DRAFT_PHASE_FULL : DRAFT_PHASE_QUICK;
-  const toneDataByTone = phase === DRAFT_PHASE_FULL ? await getAdaptiveToneDataMap() : null;
+  const autoPromptData = phase === DRAFT_PHASE_FULL ? await getAutoPromptData() : null;
   const { systemPrompt, userMessage } = buildAdaptiveDraftPrompt({
     tweetText: msg.tweetText,
     context: msg.context,
     phase,
-    toneDataByTone
+    autoPromptData,
+    voiceProfile: settings.voiceProfile
   });
 
   const modelResult = await runDraftModel({
@@ -294,7 +342,8 @@ async function handleGenerateToneDraft(msg, requestId, settings, modelTarget) {
     toneData,
     context: msg.context,
     currentDraft: msg.currentDraft || '',
-    baseToneHint: msg.baseToneHint || 'smart'
+    baseToneHint: msg.baseToneHint || 'smart',
+    voiceProfile: settings.voiceProfile
   });
 
   const modelResult = await runDraftModel({
@@ -389,13 +438,14 @@ async function handleGenerateDraft(msg) {
 }
 
 async function handleSaveComparison(tone, entry) {
-  const toneData = await getToneData(tone);
-  toneData.comparisons.push(entry);
-  if (toneData.comparisons.length > 15) {
-    toneData.comparisons = toneData.comparisons.slice(-15);
-  }
-  TONE_CACHE.set(tone, toneData);
-  await chrome.storage.local.set({ [`tone_${tone}`]: toneData });
+  const autoPromptData = await getAutoPromptData();
+  autoPromptData.comparisons.push({
+    ...entry,
+    baseTone: entry.baseTone || (tone === 'auto' ? null : tone)
+  });
+  autoPromptData.comparisons = autoPromptData.comparisons.slice(-MAX_AUTO_COMPARISONS);
+  AUTO_PROMPT_CACHE.value = autoPromptData;
+  await chrome.storage.local.set({ [AUTO_PROMPT_DATA_KEY]: autoPromptData });
 }
 
 export {

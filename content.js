@@ -1,13 +1,6 @@
 (function () {
   'use strict';
 
-  const TONES = [
-    { key: 'supportive', label: 'Supportive' },
-    { key: 'question', label: 'Question' },
-    { key: 'smart', label: 'Smart' },
-    { key: 'funny', label: 'Funny' },
-    { key: 'enhance', label: 'Enhance' }
-  ];
   const STRATEGY_LABELS = {
     humor: 'Humor',
     deep_share: 'Deep Share',
@@ -22,6 +15,11 @@
   const LOOKAHEAD_COUNT = 6;
   const MAX_TRACKED_POSTS = 48;
   const SENT_HISTORY_LIMIT = 18;
+  const MAX_REPLY_POST_AGE_MS = 2 * 60 * 60 * 1000;
+  const DRAFT_HANDOFFS_KEY = 'xga_draft_handoffs';
+  const SENT_POSTS_KEY = 'xga_sent_posts';
+  const MAX_SENT_POSTS = 500;
+  const STALE_POST_SKIP_REASON = 'Skipped because the post is older than 2 hours.';
   const LOG_PREFIX = '[XGA]';
 
   const state = {
@@ -35,6 +33,8 @@
     expandedDeckCardId: '',
     sentHistory: [],
     sentCount: 0,
+    persistedSentPosts: new Map(),
+    draftHandoffs: new Map(),
     refreshScheduled: false,
     ownUsername: ''
   };
@@ -89,6 +89,16 @@
     } catch {
       return '';
     }
+  }
+
+  function findTweetCreatedAt(article) {
+    const time = article.querySelector('a[href*="/status/"] time[datetime]');
+    const timestamp = Date.parse(time?.getAttribute('datetime') || '');
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function isFreshReplyTarget(createdAt, now = Date.now()) {
+    return Number.isFinite(createdAt) && createdAt > 0 && now - createdAt <= MAX_REPLY_POST_AGE_MS;
   }
 
   function findUserNameHandle(userName) {
@@ -264,9 +274,14 @@
         if (isPromotedArticle(article) || !canReplyToArticle(article)) return null;
 
         const postId = findTweetId(article);
+        if (!postId || isPersistedSentPost(postId)) return null;
+
+        const createdAt = findTweetCreatedAt(article);
+        if (!isFreshReplyTarget(createdAt)) return null;
+
         const text = findTweetText(article);
         const quotedTweet = findQuotedTweet(article);
-        if (!postId || (!text && !quotedTweet?.text)) return null;
+        if (!text && !quotedTweet?.text) return null;
 
         const rect = article.getBoundingClientRect();
         const posterHandle = findPosterHandle(article);
@@ -276,9 +291,11 @@
           article,
           text,
           tweetUrl: findTweetUrl(article),
+          createdAt,
           rect,
           posterHandle,
           context: {
+            createdAt,
             posterHandle,
             quotedTweet,
             threadTweets: [text]
@@ -328,7 +345,7 @@
 
   function isUserInteractingWithCard() {
     const active = document.activeElement;
-    return Boolean(active && active.closest('.xga-card-textarea, .xga-deck-card-textarea, .xga-card-select'));
+    return Boolean(active && active.closest('.xga-card-textarea, .xga-deck-card-textarea'));
   }
 
   function createDraftRecord(item) {
@@ -337,12 +354,12 @@
       article: item.article,
       text: item.text,
       tweetUrl: item.tweetUrl,
+      createdAt: item.createdAt,
       posterHandle: item.posterHandle,
       context: item.context,
       status: 'idle',
       strategyType: null,
       baseTone: null,
-      selectedMode: 'auto',
       autoText: '',
       editedText: '',
       modelLabel: '',
@@ -358,10 +375,125 @@
   function updateDraftRecord(record, item) {
     record.article = item.article;
     record.tweetUrl = item.tweetUrl;
+    record.createdAt = item.createdAt;
     record.posterHandle = item.posterHandle;
     record.context = item.context;
     record.lastSeenAt = Date.now();
     record.text = item.text;
+  }
+
+  function createDraftHandoff(record) {
+    return {
+      status: record.status === 'sending' ? 'ready' : record.status,
+      strategyType: record.strategyType || null,
+      baseTone: record.baseTone || null,
+      autoText: record.autoText || '',
+      editedText: record.editedText || '',
+      modelLabel: record.modelLabel || '',
+      error: record.error || '',
+      posterHandle: record.posterHandle || '',
+      text: record.text || '',
+      tweetUrl: record.tweetUrl || '',
+      createdAt: record.createdAt || 0,
+      savedAt: Date.now()
+    };
+  }
+
+  function createPersistedSentPost(record, finalText) {
+    return {
+      tweetUrl: record.tweetUrl || '',
+      posterHandle: record.posterHandle || '',
+      text: record.text || '',
+      draftText: finalText || '',
+      createdAt: record.createdAt || 0,
+      sentAt: Date.now()
+    };
+  }
+
+  async function persistDraftHandoffs() {
+    await chrome.storage.local.set({
+      [DRAFT_HANDOFFS_KEY]: Object.fromEntries(state.draftHandoffs.entries())
+    });
+  }
+
+  async function persistSentPosts() {
+    await chrome.storage.local.set({
+      [SENT_POSTS_KEY]: Object.fromEntries(state.persistedSentPosts.entries())
+    });
+  }
+
+  async function loadDraftHandoffs() {
+    try {
+      const result = await chrome.storage.local.get(DRAFT_HANDOFFS_KEY);
+      const handoffs = result?.[DRAFT_HANDOFFS_KEY];
+      state.draftHandoffs = handoffs && typeof handoffs === 'object'
+        ? new Map(Object.entries(handoffs))
+        : new Map();
+    } catch (error) {
+      console.warn(LOG_PREFIX, 'Could not load draft handoffs', error);
+      state.draftHandoffs = new Map();
+    }
+  }
+
+  async function loadSentPosts() {
+    try {
+      const result = await chrome.storage.local.get(SENT_POSTS_KEY);
+      const sentPosts = result?.[SENT_POSTS_KEY];
+      state.persistedSentPosts = sentPosts && typeof sentPosts === 'object'
+        ? new Map(Object.entries(sentPosts))
+        : new Map();
+    } catch (error) {
+      console.warn(LOG_PREFIX, 'Could not load sent posts', error);
+      state.persistedSentPosts = new Map();
+    }
+  }
+
+  function applyDraftHandoff(record) {
+    const handoff = state.draftHandoffs.get(record.postId);
+    if (!handoff) return;
+
+    if (typeof handoff.posterHandle === 'string' && handoff.posterHandle) {
+      record.posterHandle = handoff.posterHandle;
+    }
+    if (typeof handoff.text === 'string' && handoff.text) {
+      record.text = handoff.text;
+    }
+    if (typeof handoff.tweetUrl === 'string' && handoff.tweetUrl) {
+      record.tweetUrl = handoff.tweetUrl;
+    }
+    if (Number.isFinite(handoff.createdAt) && handoff.createdAt > 0) {
+      record.createdAt = handoff.createdAt;
+    }
+
+    record.status = typeof handoff.status === 'string' ? handoff.status : record.status;
+    record.strategyType = handoff.strategyType || null;
+    record.baseTone = handoff.baseTone || null;
+    record.autoText = handoff.autoText || '';
+    record.editedText = handoff.editedText || '';
+    record.modelLabel = handoff.modelLabel || '';
+    record.error = handoff.error || '';
+    record.lastSeenAt = typeof handoff.savedAt === 'number' ? handoff.savedAt : record.lastSeenAt;
+
+    state.draftHandoffs.delete(record.postId);
+    void persistDraftHandoffs().catch((error) => {
+      console.warn(LOG_PREFIX, 'Could not clear used draft handoff', error);
+    });
+  }
+
+  function isPersistedSentPost(postId) {
+    return state.persistedSentPosts.has(postId);
+  }
+
+  function markPersistedSentPost(record, finalText) {
+    state.persistedSentPosts.set(record.postId, createPersistedSentPost(record, finalText));
+    state.persistedSentPosts = new Map(
+      Array.from(state.persistedSentPosts.entries())
+        .sort((a, b) => (b[1]?.sentAt || 0) - (a[1]?.sentAt || 0))
+        .slice(0, MAX_SENT_POSTS)
+    );
+    void persistSentPosts().catch((error) => {
+      console.warn(LOG_PREFIX, 'Could not persist sent post registry', error);
+    });
   }
 
   function pruneDrafts() {
@@ -382,8 +514,11 @@
       const record = state.drafts.get(item.postId);
       if (record) {
         updateDraftRecord(record, item);
+        applyDraftHandoff(record);
       } else {
-        state.drafts.set(item.postId, createDraftRecord(item));
+        const nextRecord = createDraftRecord(item);
+        applyDraftHandoff(nextRecord);
+        state.drafts.set(item.postId, nextRecord);
       }
     }
     pruneDrafts();
@@ -392,6 +527,59 @@
   function removeOwnDrafts() {
     for (const [postId, record] of state.drafts.entries()) {
       if (!isOwnPosterHandle(record.posterHandle) || record.status === 'sending') continue;
+      state.drafts.delete(postId);
+      state.inFlightPostIds.delete(postId);
+    }
+
+    state.visibleIds = state.visibleIds.filter((postId) => state.drafts.has(postId));
+    state.priorityIds = state.priorityIds.filter((postId) => state.drafts.has(postId));
+    if (state.expandedDeckCardId && !state.drafts.has(state.expandedDeckCardId)) {
+      state.expandedDeckCardId = '';
+    }
+  }
+
+  function removePersistedSentDrafts() {
+    for (const [postId, record] of state.drafts.entries()) {
+      if (!isPersistedSentPost(postId) || record.status === 'sending') continue;
+      state.drafts.delete(postId);
+      state.inFlightPostIds.delete(postId);
+    }
+
+    state.visibleIds = state.visibleIds.filter((postId) => state.drafts.has(postId));
+    state.priorityIds = state.priorityIds.filter((postId) => state.drafts.has(postId));
+    if (state.expandedDeckCardId && !state.drafts.has(state.expandedDeckCardId)) {
+      state.expandedDeckCardId = '';
+    }
+  }
+
+  function refreshDraftCreatedAt(record) {
+    const article = resolveArticle(record.postId, record.article);
+    if (!article) return;
+
+    const createdAt = findTweetCreatedAt(article);
+    if (!createdAt) return;
+
+    record.article = article;
+    record.createdAt = createdAt;
+  }
+
+  function isFreshDraftRecord(record) {
+    refreshDraftCreatedAt(record);
+    return isFreshReplyTarget(record.createdAt);
+  }
+
+  function markStaleDraft(record) {
+    record.status = 'skipped';
+    record.error = STALE_POST_SKIP_REASON;
+    record.autoText = '';
+    record.editedText = '';
+  }
+
+  function removeStaleDrafts() {
+    for (const [postId, record] of state.drafts.entries()) {
+      if (record.status === 'sending') continue;
+      if (isFreshDraftRecord(record)) continue;
+
       state.drafts.delete(postId);
       state.inFlightPostIds.delete(postId);
     }
@@ -470,29 +658,6 @@
       default:
         return 'Idle';
     }
-  }
-
-  function createModeSelect(record) {
-    const select = document.createElement('select');
-    select.className = 'xga-card-select';
-
-    const autoOption = document.createElement('option');
-    autoOption.value = 'auto';
-    autoOption.textContent = 'Auto';
-    select.appendChild(autoOption);
-
-    for (const tone of TONES) {
-      const option = document.createElement('option');
-      option.value = tone.key;
-      option.textContent = tone.label;
-      select.appendChild(option);
-    }
-
-    select.value = record.selectedMode || 'auto';
-    select.addEventListener('change', (event) => {
-      record.selectedMode = event.target.value;
-    });
-    return select;
   }
 
   function createButton(label, className, onClick, disabled = false) {
@@ -580,7 +745,6 @@
 
     const controls = document.createElement('div');
     controls.className = 'xga-card-controls';
-    controls.appendChild(createModeSelect(record));
 
     const actions = document.createElement('div');
     actions.className = 'xga-card-actions';
@@ -702,7 +866,7 @@
     return document.querySelector(`a[href*="/status/${postId}"]`)?.closest('article') || null;
   }
 
-  function openPost(postId) {
+  async function openPost(postId) {
     const record = state.drafts.get(postId);
     const article = resolveArticle(postId, record?.article || null);
     if (article) {
@@ -714,9 +878,18 @@
 
     const sentEntry = state.sentHistory.find((entry) => entry.postId === postId);
     const tweetUrl = record?.tweetUrl || sentEntry?.tweetUrl || '';
-    if (tweetUrl) {
-      window.open(tweetUrl, '_blank', 'noopener');
+    if (!tweetUrl) return;
+
+    if (record) {
+      state.draftHandoffs.set(postId, createDraftHandoff(record));
+      try {
+        await persistDraftHandoffs();
+      } catch (error) {
+        console.warn(LOG_PREFIX, 'Could not persist draft handoff', error);
+      }
     }
+
+    window.location.assign(tweetUrl);
   }
 
   function rememberSentDraft(record, finalText) {
@@ -821,7 +994,6 @@
 
         const controls = document.createElement('div');
         controls.className = 'xga-deck-card-controls';
-        controls.appendChild(createModeSelect(recordOrEntry));
 
         const primaryActions = document.createElement('div');
         primaryActions.className = 'xga-deck-card-actions primary-row';
@@ -1079,6 +1251,10 @@
       record.error = 'Skipped own post.';
       return;
     }
+    if (!isFreshDraftRecord(record)) {
+      markStaleDraft(record);
+      return;
+    }
 
     state.activeGenerationCount += 1;
     state.inFlightPostIds.add(record.postId);
@@ -1155,6 +1331,11 @@
       render(collectCandidateArticles());
       return;
     }
+    if (!isFreshDraftRecord(record)) {
+      markStaleDraft(record);
+      render(collectCandidateArticles());
+      return;
+    }
 
     record.status = 'generating';
     record.error = '';
@@ -1166,11 +1347,9 @@
     render(collectCandidateArticles());
 
     try {
-      const mode = record.selectedMode || 'auto';
       const response = await chrome.runtime.sendMessage({
         type: 'GENERATE_DRAFT',
-        mode: mode === 'auto' ? 'auto' : 'tone',
-        tone: mode === 'auto' ? null : mode,
+        mode: 'auto',
         phase: 'full',
         tweetText: requestedText,
         context: requestedContext,
@@ -1328,6 +1507,12 @@
       return;
     }
     record.article = article;
+    refreshDraftCreatedAt(record);
+    if (!isFreshDraftRecord(record)) {
+      markStaleDraft(record);
+      render(collectCandidateArticles());
+      return;
+    }
 
     record.status = 'sending';
     record.error = '';
@@ -1347,15 +1532,18 @@
       record.status = 'sent';
       record.error = '';
       rememberSentDraft(record, finalText);
+      markPersistedSentPost(record, finalText);
 
       if (record.baseTone && record.autoText) {
         chrome.runtime.sendMessage({
           type: 'SAVE_COMPARISON',
-          tone: record.baseTone,
+          tone: 'auto',
           entry: {
             originalPost: record.text,
             aiGenerated: record.autoText,
             userFinal: finalText,
+            strategyType: record.strategyType || null,
+            baseTone: record.baseTone || null,
             timestamp: Date.now()
           }
         });
@@ -1373,6 +1561,8 @@
     const items = collectCandidateArticles();
     syncDraftsWithFeed(items);
     removeOwnDrafts();
+    removePersistedSentDrafts();
+    removeStaleDrafts();
     computePriority(items);
     if (!isUserInteractingWithCard()) {
       render(items);
@@ -1401,10 +1591,24 @@
 
   function observeSettings() {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local' || !changes.settings) return;
-      state.ownUsername = changes.settings.newValue?.username || '';
-      removeOwnDrafts();
-      scheduleRefresh();
+      if (areaName !== 'local') return;
+
+      if (changes.settings) {
+        state.ownUsername = changes.settings.newValue?.username || '';
+        removeOwnDrafts();
+      }
+
+      if (changes[SENT_POSTS_KEY]) {
+        const sentPosts = changes[SENT_POSTS_KEY].newValue;
+        state.persistedSentPosts = sentPosts && typeof sentPosts === 'object'
+          ? new Map(Object.entries(sentPosts))
+          : new Map();
+        removePersistedSentDrafts();
+      }
+
+      if (changes.settings || changes[SENT_POSTS_KEY]) {
+        scheduleRefresh();
+      }
     });
   }
 
@@ -1427,6 +1631,8 @@
   async function init() {
     console.log(LOG_PREFIX, 'Content script initialized on', window.location.href);
     await loadContentSettings();
+    await loadSentPosts();
+    await loadDraftHandoffs();
     observeSettings();
     ensureUiRoots();
     observeFeed();
