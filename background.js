@@ -118,7 +118,11 @@ async function getSettings() {
     ...settings,
     voiceProfile: {
       ...defaults.voiceProfile,
-      ...(settings?.voiceProfile || {})
+      ...(settings?.voiceProfile || {}),
+      choiceSelections: {
+        ...defaults.voiceProfile.choiceSelections,
+        ...(settings?.voiceProfile?.choiceSelections || {})
+      }
     }
   };
   return SETTINGS_CACHE.value;

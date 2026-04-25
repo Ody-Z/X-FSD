@@ -5,7 +5,7 @@ Chrome extension that generates voice-matched replies on X (Twitter) using Claud
 ## Features
 
 - **Auto reply strategy**: The model decides whether to skip a post, then picks the best reply strategy automatically
-- **Voice onboarding**: Build and save a system prompt from your identity, viewpoints, tone rules, avoid list, and writing samples
+- **Voice onboarding**: Pick identity, interest, voice, and sample-reply chips; the extension builds the system prompt
 - **Five model paths**: Claude Haiku 3.5 (Anthropic), Claude Code Haiku Local (macOS bridge), Kimi K2.5 (Moonshot), Gemini 3.1 Flash-Lite Preview (Google API), and Gemini CLI Local (macOS bridge)
 - **Web search**: All models can search for current context before replying
 - **Style learning**: Tracks how you edit AI-generated replies and adapts the auto prompt over time
@@ -49,7 +49,7 @@ X-FSD/
 
 3. **Configure**
    - Click the extension icon to open the popup
-   - Complete **Onboarding** to save your voice profile and system prompt
+   - Complete **Onboarding** by choosing the chips and sample replies that fit your voice
    - Enter your API key(s), choose a model, and set your X username
    - Click **Save Settings**
 
@@ -58,7 +58,7 @@ X-FSD/
 Auto is the only user-facing reply mode. For each candidate post, the content script queues a draft request. The background service worker:
 
 1. Skips posts with no usable text, low-signal repost shells, link-only posts, own posts, or sensitive topics.
-2. Builds a system prompt from your saved voice profile.
+2. Builds a system prompt from your saved voice profile and always injects the dash hard rule.
 3. Sends the post context to the selected model and asks it to return one JSON object.
 4. The JSON must include `status`, `strategyType`, `baseTone`, `reply`, and `reason`.
 5. If the draft is ready, the UI shows it for edit/send. If you edit and send it, the final text is saved as an example for future full-quality regenerations.

@@ -18,7 +18,9 @@ describe('buildSystemPrompt', () => {
   it('uses default tone when no custom prompt', () => {
     const result = buildSystemPrompt('smart', null);
     assert.ok(result.includes(TONE_DEFAULTS.smart));
-    assert.ok(result.includes('Ody is a Gen Z AI native builder'));
+    assert.ok(result.includes('Voice guide for the user'));
+    assert.ok(result.includes('Never use --.'));
+    assert.ok(!result.includes('Ody is a Gen Z AI native builder'));
   });
 
   it('uses custom prompt from toneData', () => {
@@ -48,6 +50,7 @@ describe('buildSystemPrompt', () => {
     });
 
     assert.ok(result.includes('Write as Alex'));
+    assert.ok(result.includes('Never use --.'));
     assert.ok(!result.includes('Ody is a Gen Z AI native builder'));
   });
 });
@@ -90,7 +93,7 @@ describe('adaptive draft prompts', () => {
     });
 
     assert.ok(prompt.systemPrompt.includes('Optimize for speed'));
-    assert.ok(prompt.systemPrompt.includes('If the reply is one line, use no punctuation'));
+    assert.ok(prompt.systemPrompt.includes('Never use --.'));
     assert.ok(prompt.systemPrompt.includes('Never exceed 2 sentences'));
     assert.ok(!prompt.systemPrompt.includes('Style references from the user'));
   });

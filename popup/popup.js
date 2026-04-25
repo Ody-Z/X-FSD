@@ -2,6 +2,69 @@ import { CLAUDE_CODE_LOCAL_MODEL, DEFAULT_VOICE_PROFILE, GEMINI_CLI_LOCAL_MODEL 
 
 let generatedPromptSnapshot = '';
 let canAutoSyncPrompt = true;
+const DASH_HARD_RULES = [
+  'Never use --.',
+  'Never use em dashes or en dashes.',
+  'Do not use dash-style asides.'
+];
+const CHOICE_GROUPS = {
+  identity: [
+    'builder',
+    'founder',
+    'designer',
+    'marketer',
+    'engineer',
+    'creator',
+    'investor',
+    'researcher',
+    'operator',
+    'student'
+  ],
+  interests: [
+    'AI products',
+    'startups',
+    'growth',
+    'design taste',
+    'distribution',
+    'developer tools',
+    'consumer apps',
+    'markets',
+    'culture',
+    'product strategy'
+  ],
+  voice: [
+    'short',
+    'casual',
+    'sharp',
+    'warm',
+    'curious',
+    'skeptical',
+    'funny',
+    'high-conviction',
+    'low punctuation',
+    'builder-brained',
+    'direct',
+    'optimistic'
+  ],
+  samples: [
+    'this is the part people keep underestimating',
+    'yeah but distribution is doing half the work here',
+    'lowkey the best products make the behavior feel obvious',
+    'curious what changed after you shipped this',
+    'feels true but only if the team has real taste',
+    'this is why speed compounds so weirdly',
+    'strong agree but the hard part is making it repeatable',
+    'the boring version of this is probably the correct one',
+    'need to see how users behave after the first week',
+    'this is less about the model and more about the workflow'
+  ]
+};
+const choiceState = {
+  identity: new Set(),
+  interests: new Set(),
+  voice: new Set(),
+  samples: new Set()
+};
 
 // --- Tab Navigation ---
 function activateTab(tabName) {
@@ -134,39 +197,121 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
 });
 
 // --- Onboarding ---
+function normalizeLines(text, { splitCommas = true } = {}) {
+  const delimiter = splitCommas ? /[\n,]/ : /\n/;
+  return (text || '')
+    .split(delimiter)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function uniqueLines(lines) {
+  return Array.from(new Set(lines.map((line) => line.trim()).filter(Boolean)));
+}
+
+function setGroupSelections(group, values = []) {
+  choiceState[group] = new Set(
+    values.filter((value) => CHOICE_GROUPS[group].includes(value))
+  );
+}
+
+function getSelectedChoiceLines(group) {
+  return CHOICE_GROUPS[group].filter((value) => choiceState[group].has(value));
+}
+
+function getOtherLines(group) {
+  const otherId = group === 'samples' ? 'samplesOther' : `${group}Other`;
+  return normalizeLines(document.getElementById(otherId).value, { splitCommas: group !== 'samples' });
+}
+
 function getVoiceProfile() {
+  const identity = uniqueLines([...getSelectedChoiceLines('identity'), ...getOtherLines('identity')]);
+  const interests = uniqueLines([...getSelectedChoiceLines('interests'), ...getOtherLines('interests')]);
+  const voice = uniqueLines([...getSelectedChoiceLines('voice'), ...getOtherLines('voice')]);
+  const samples = uniqueLines([...getSelectedChoiceLines('samples'), ...getOtherLines('samples')]);
+
   return {
     displayName: document.getElementById('voiceDisplayName').value.trim(),
-    identity: document.getElementById('voiceIdentity').value.trim(),
-    viewpoints: document.getElementById('voiceViewpoints').value.trim(),
-    toneRules: document.getElementById('voiceToneRules').value.trim(),
-    avoid: document.getElementById('voiceAvoid').value.trim(),
-    writingSamples: document.getElementById('voiceSamples').value.trim(),
-    systemPrompt: document.getElementById('voiceSystemPrompt').value.trim()
+    identity: identity.join('\n'),
+    viewpoints: interests.join('\n'),
+    toneRules: voice.join('\n'),
+    avoid: DASH_HARD_RULES.join('\n'),
+    writingSamples: samples.join('\n'),
+    systemPrompt: document.getElementById('voiceSystemPrompt').value.trim(),
+    choiceSelections: {
+      identity: getSelectedChoiceLines('identity'),
+      interests: getSelectedChoiceLines('interests'),
+      voice: getSelectedChoiceLines('voice'),
+      samples: getSelectedChoiceLines('samples'),
+      identityOther: document.getElementById('identityOther').value.trim(),
+      interestsOther: document.getElementById('interestsOther').value.trim(),
+      voiceOther: document.getElementById('voiceOther').value.trim(),
+      samplesOther: document.getElementById('samplesOther').value.trim()
+    }
   };
 }
 
+function setOtherValues(selections = {}) {
+  document.getElementById('identityOther').value = selections.identityOther || '';
+  document.getElementById('interestsOther').value = selections.interestsOther || '';
+  document.getElementById('voiceOther').value = selections.voiceOther || '';
+  document.getElementById('samplesOther').value = selections.samplesOther || '';
+}
+
+function inferSelectionsFromText(group, text) {
+  const lowerText = (text || '').toLowerCase();
+  return CHOICE_GROUPS[group].filter((value) => lowerText.includes(value.toLowerCase()));
+}
+
+function inferOtherText(group, text, selectedValues) {
+  const selectedSet = new Set(selectedValues.map((value) => value.toLowerCase()));
+  return normalizeLines(text, { splitCommas: group !== 'samples' })
+    .filter((line) => !selectedSet.has(line.toLowerCase()))
+    .join('\n');
+}
+
 function loadVoiceProfile(profile = {}) {
-  const voiceProfile = { ...DEFAULT_VOICE_PROFILE, ...(profile || {}) };
-  const generatedPrompt = buildVoiceSystemPrompt(voiceProfile);
+  const voiceProfile = {
+    ...DEFAULT_VOICE_PROFILE,
+    ...(profile || {}),
+    choiceSelections: {
+      ...DEFAULT_VOICE_PROFILE.choiceSelections,
+      ...(profile?.choiceSelections || {})
+    }
+  };
+  const selections = voiceProfile.choiceSelections || {};
+  const hasSavedSelections = Boolean(profile?.choiceSelections);
+
+  setGroupSelections('identity', hasSavedSelections ? selections.identity : inferSelectionsFromText('identity', voiceProfile.identity));
+  setGroupSelections('interests', hasSavedSelections ? selections.interests : inferSelectionsFromText('interests', voiceProfile.viewpoints));
+  setGroupSelections('voice', hasSavedSelections ? selections.voice : inferSelectionsFromText('voice', voiceProfile.toneRules));
+  setGroupSelections('samples', hasSavedSelections ? selections.samples : inferSelectionsFromText('samples', voiceProfile.writingSamples));
+  renderChoiceStates();
+
   document.getElementById('voiceDisplayName').value = voiceProfile.displayName || '';
-  document.getElementById('voiceIdentity').value = voiceProfile.identity || '';
-  document.getElementById('voiceViewpoints').value = voiceProfile.viewpoints || '';
-  document.getElementById('voiceToneRules').value = voiceProfile.toneRules || '';
-  document.getElementById('voiceAvoid').value = voiceProfile.avoid || '';
-  document.getElementById('voiceSamples').value = voiceProfile.writingSamples || '';
+  if (hasSavedSelections) {
+    setOtherValues(selections);
+  } else {
+    setOtherValues({
+      identityOther: inferOtherText('identity', voiceProfile.identity, getSelectedChoiceLines('identity')),
+      interestsOther: inferOtherText('interests', voiceProfile.viewpoints, getSelectedChoiceLines('interests')),
+      voiceOther: inferOtherText('voice', voiceProfile.toneRules, getSelectedChoiceLines('voice')),
+      samplesOther: inferOtherText('samples', voiceProfile.writingSamples, getSelectedChoiceLines('samples'))
+    });
+  }
+  renderChoiceStates();
+
+  const generatedPrompt = buildVoiceSystemPrompt(getVoiceProfile());
   setVoiceSystemPrompt(voiceProfile.systemPrompt || generatedPrompt, {
     autoSync: !voiceProfile.systemPrompt || voiceProfile.systemPrompt === generatedPrompt
   });
 }
 
 function toBulletLines(text) {
-  return (text || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
+  const bullets = normalizeLines(text, { splitCommas: false })
     .map((line) => `- ${line}`)
     .join('\n');
+  return bullets;
 }
 
 function buildSection(label, text) {
@@ -179,12 +324,10 @@ function buildVoiceSystemPrompt(profile) {
   return [
     `Write replies as ${displayName}.`,
     buildSection('Identity', profile.identity),
-    buildSection('Viewpoints to preserve', profile.viewpoints),
-    buildSection('Tone and style rules', profile.toneRules),
-    buildSection('Avoid', profile.avoid),
-    buildSection('Reference writing samples', profile.writingSamples),
-    'When the post conflicts with these viewpoints, reply with nuance instead of copying the post author.',
-    'Keep the reply compact, casual, and specific to the post.'
+    buildSection('Interests and viewpoints', profile.viewpoints),
+    buildSection('Voice', profile.toneRules),
+    buildSection('Reference replies', profile.writingSamples),
+    `Hard rules:\n${DASH_HARD_RULES.map((rule) => `- ${rule}`).join('\n')}`
   ].filter(Boolean).join('\n\n');
 }
 
@@ -204,14 +347,55 @@ function syncGeneratedVoicePrompt() {
   setVoiceSystemPrompt(buildVoiceSystemPrompt(getVoiceProfile()));
 }
 
-document.getElementById('buildVoicePrompt').addEventListener('click', () => {
-  const profile = getVoiceProfile();
-  setVoiceSystemPrompt(buildVoiceSystemPrompt(profile));
-});
+function renderChoiceGroup(group, containerId) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
 
-document.getElementById('resetVoicePrompt').addEventListener('click', () => {
-  loadVoiceProfile(DEFAULT_VOICE_PROFILE);
-});
+  CHOICE_GROUPS[group].forEach((value) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = group === 'samples' ? 'choice-chip sample-chip' : 'choice-chip';
+    button.dataset.group = group;
+    button.dataset.value = value;
+    button.textContent = value;
+    button.addEventListener('click', () => {
+      if (choiceState[group].has(value)) {
+        choiceState[group].delete(value);
+      } else {
+        choiceState[group].add(value);
+      }
+      renderChoiceStates();
+      syncGeneratedVoicePrompt();
+    });
+    container.appendChild(button);
+  });
+}
+
+function renderChoiceStates() {
+  Object.keys(CHOICE_GROUPS).forEach((group) => {
+    document.querySelectorAll(`[data-group="${group}"]`).forEach((button) => {
+      const active = choiceState[group].has(button.dataset.value);
+      button.classList.toggle('selected', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+
+    const count = choiceState[group].size + getOtherLines(group).length;
+    const countNode = document.getElementById(`${group}Count`);
+    if (countNode) countNode.textContent = `${count} selected`;
+  });
+}
+
+function resetOnboarding() {
+  Object.keys(choiceState).forEach((group) => {
+    choiceState[group].clear();
+  });
+  document.getElementById('voiceDisplayName').value = '';
+  setOtherValues();
+  renderChoiceStates();
+  setVoiceSystemPrompt(buildVoiceSystemPrompt(getVoiceProfile()));
+}
+
+document.getElementById('resetVoicePrompt').addEventListener('click', resetOnboarding);
 
 document.getElementById('saveVoiceProfile').addEventListener('click', async () => {
   const status = document.getElementById('onboardingStatus');
@@ -235,20 +419,21 @@ document.getElementById('saveVoiceProfile').addEventListener('click', async () =
   }
 });
 
-[
-  'voiceDisplayName',
-  'voiceIdentity',
-  'voiceViewpoints',
-  'voiceToneRules',
-  'voiceAvoid',
-  'voiceSamples'
-].forEach((id) => {
-  document.getElementById(id).addEventListener('input', syncGeneratedVoicePrompt);
+['voiceDisplayName', 'identityOther', 'interestsOther', 'voiceOther', 'samplesOther'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', () => {
+    renderChoiceStates();
+    syncGeneratedVoicePrompt();
+  });
 });
 
 document.getElementById('voiceSystemPrompt').addEventListener('input', (event) => {
   canAutoSyncPrompt = event.target.value === generatedPromptSnapshot;
 });
+
+renderChoiceGroup('identity', 'identityChoices');
+renderChoiceGroup('interests', 'interestsChoices');
+renderChoiceGroup('voice', 'voiceChoices');
+renderChoiceGroup('samples', 'samplesChoices');
 
 // --- Helpers ---
 function showStatus(el, msg, type) {

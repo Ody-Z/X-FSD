@@ -66,52 +66,57 @@
 
     <!-- Onboarding Tab -->
     <section id="onboarding" class="tab-content">
-      <div class="onboarding-steps" aria-label="Onboarding steps">
-        <span class="step-chip">1 Voice</span>
-        <span class="step-chip">2 Views</span>
-        <span class="step-chip">3 Rules</span>
-        <span class="step-chip">4 Prompt</span>
-      </div>
-
       <div class="field">
         <label for="voiceDisplayName">Name</label>
         <input type="text" id="voiceDisplayName" placeholder="Your name or handle">
       </div>
 
-      <div class="field">
-        <label for="voiceIdentity">Identity</label>
-        <textarea id="voiceIdentity" rows="4" placeholder="Builder, investor, researcher, founder, designer..."></textarea>
-        <p class="hint">Add one fact per line. These facts help the model know who it is speaking as.</p>
-      </div>
+      <section class="choice-group" aria-labelledby="identityTitle">
+        <div class="choice-header">
+          <h2 id="identityTitle">Identity</h2>
+          <span id="identityCount" class="choice-count">0 selected</span>
+        </div>
+        <div id="identityChoices" class="choice-grid"></div>
+        <input type="text" id="identityOther" class="other-input" placeholder="Other identity">
+      </section>
 
-      <div class="field">
-        <label for="voiceViewpoints">Viewpoints</label>
-        <textarea id="voiceViewpoints" rows="4" placeholder="Beliefs, strong opinions, recurring takes, things you usually agree or disagree with."></textarea>
-      </div>
+      <section class="choice-group" aria-labelledby="interestsTitle">
+        <div class="choice-header">
+          <h2 id="interestsTitle">Interests</h2>
+          <span id="interestsCount" class="choice-count">0 selected</span>
+        </div>
+        <div id="interestsChoices" class="choice-grid"></div>
+        <input type="text" id="interestsOther" class="other-input" placeholder="Other interest">
+      </section>
 
-      <div class="field">
-        <label for="voiceToneRules">Tone Rules</label>
-        <textarea id="voiceToneRules" rows="4" placeholder="Short lines, casual punctuation, direct takes, questions you like to ask."></textarea>
-      </div>
+      <section class="choice-group" aria-labelledby="voiceTitle">
+        <div class="choice-header">
+          <h2 id="voiceTitle">Voice</h2>
+          <span id="voiceCount" class="choice-count">0 selected</span>
+        </div>
+        <div id="voiceChoices" class="choice-grid"></div>
+        <input type="text" id="voiceOther" class="other-input" placeholder="Other voice rule">
+      </section>
 
-      <div class="field">
-        <label for="voiceAvoid">Avoid</label>
-        <textarea id="voiceAvoid" rows="3" placeholder="Words, formats, claims, jokes, or attitudes that should not sound like you."></textarea>
-      </div>
+      <section class="choice-group" aria-labelledby="samplesTitle">
+        <div class="choice-header">
+          <h2 id="samplesTitle">Sample Replies</h2>
+          <span id="samplesCount" class="choice-count">0 selected</span>
+        </div>
+        <div id="samplesChoices" class="sample-list"></div>
+        <textarea id="samplesOther" class="other-input sample-other" rows="3" placeholder="Other sample replies"></textarea>
+      </section>
 
-      <div class="field">
-        <label for="voiceSamples">Writing Samples</label>
-        <textarea id="voiceSamples" rows="5" placeholder="Paste 3-5 replies or posts that sound like you."></textarea>
-      </div>
+      <details class="advanced-prompt">
+        <summary>Advanced prompt</summary>
+        <div class="field prompt-field">
+          <label for="voiceSystemPrompt">System Prompt</label>
+          <textarea id="voiceSystemPrompt" rows="9" spellcheck="false"></textarea>
+        </div>
+      </details>
 
       <div class="voice-actions">
-        <button id="buildVoicePrompt" class="btn">Build Prompt</button>
         <button id="resetVoicePrompt" class="btn btn-secondary">Reset</button>
-      </div>
-
-      <div class="field prompt-field">
-        <label for="voiceSystemPrompt">System Prompt</label>
-        <textarea id="voiceSystemPrompt" rows="9" spellcheck="false"></textarea>
       </div>
 
       <button id="saveVoiceProfile" class="btn btn-primary">Save Voice Profile</button>
