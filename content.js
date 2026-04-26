@@ -12,7 +12,7 @@
   const INLINE_MAIN_CARD_COUNT = 2;
   const CARD_WIDTH = 320;
   const INLINE_CARD_GAP = 12;
-  const LOOKAHEAD_COUNT = 6;
+  const LOOKAHEAD_COUNT = 2;
   const MAX_TRACKED_POSTS = 48;
   const SENT_HISTORY_LIMIT = 18;
   const MAX_REPLY_POST_AGE_MS = 2 * 60 * 60 * 1000;
@@ -364,7 +364,9 @@
       editedText: '',
       modelLabel: '',
       error: '',
-      lastSeenAt: Date.now()
+      lastSeenAt: Date.now(),
+      autoSendRequested: false,
+      autoSendOffloaded: false
     };
   }
 
@@ -382,9 +384,9 @@
     record.text = item.text;
   }
 
-  function createDraftHandoff(record) {
+  function createDraftHandoff(record, options = {}) {
     return {
-      status: record.status === 'sending' ? 'ready' : record.status,
+      status: options.status || (record.status === 'sending' ? 'ready' : record.status),
       strategyType: record.strategyType || null,
       baseTone: record.baseTone || null,
       autoText: record.autoText || '',
@@ -395,7 +397,8 @@
       text: record.text || '',
       tweetUrl: record.tweetUrl || '',
       createdAt: record.createdAt || 0,
-      savedAt: Date.now()
+      savedAt: Date.now(),
+      autoSend: options.autoSend === true
     };
   }
 
@@ -473,6 +476,8 @@
     record.modelLabel = handoff.modelLabel || '';
     record.error = handoff.error || '';
     record.lastSeenAt = typeof handoff.savedAt === 'number' ? handoff.savedAt : record.lastSeenAt;
+    record.autoSendRequested = handoff.autoSend === true;
+    record.autoSendOffloaded = false;
 
     state.draftHandoffs.delete(record.postId);
     void persistDraftHandoffs().catch((error) => {
@@ -540,7 +545,8 @@
 
   function removePersistedSentDrafts() {
     for (const [postId, record] of state.drafts.entries()) {
-      if (!isPersistedSentPost(postId) || record.status === 'sending') continue;
+      if (!isPersistedSentPost(postId)) continue;
+      if (record.status === 'sending' && !record.autoSendOffloaded) continue;
       state.drafts.delete(postId);
       state.inFlightPostIds.delete(postId);
     }
@@ -880,6 +886,11 @@
     }
   }
 
+  async function saveDraftHandoff(record, options = {}) {
+    state.draftHandoffs.set(record.postId, createDraftHandoff(record, options));
+    await persistDraftHandoffs();
+  }
+
   async function openPost(postId) {
     const record = state.drafts.get(postId);
     const article = resolveArticle(postId, record?.article || null);
@@ -895,9 +906,8 @@
     if (!tweetUrl) return;
 
     if (record) {
-      state.draftHandoffs.set(postId, createDraftHandoff(record));
       try {
-        await persistDraftHandoffs();
+        await saveDraftHandoff(record);
       } catch (error) {
         console.warn(LOG_PREFIX, 'Could not persist draft handoff', error);
       }
@@ -1327,6 +1337,17 @@
     }
   }
 
+  function processAutoSendRequests(items) {
+    for (const item of items) {
+      const record = state.drafts.get(item.postId);
+      if (!record?.autoSendRequested) continue;
+      if (record.status === 'sending' || record.status === 'sent') continue;
+
+      record.autoSendRequested = false;
+      void sendDraft(record.postId);
+    }
+  }
+
   function skipDraft(postId) {
     const record = state.drafts.get(postId);
     if (!record || record.status === 'sending') return;
@@ -1506,18 +1527,53 @@
     });
   }
 
+  async function sendDraftFromPostTab(record) {
+    if (!record.tweetUrl) {
+      record.status = 'failed';
+      record.error = 'Could not open this post because its URL is unavailable.';
+      render(collectCandidateArticles());
+      return;
+    }
+
+    if (!isFreshReplyTarget(record.createdAt)) {
+      markStaleDraft(record);
+      render(collectCandidateArticles());
+      return;
+    }
+
+    record.status = 'sending';
+    record.error = '';
+    record.autoSendOffloaded = true;
+    render(collectCandidateArticles());
+
+    try {
+      await saveDraftHandoff(record, {
+        autoSend: true,
+        status: 'ready'
+      });
+    } catch (error) {
+      record.status = 'failed';
+      record.autoSendOffloaded = false;
+      record.error = 'Could not prepare the post tab for auto-send.';
+      console.warn(LOG_PREFIX, 'Could not persist auto-send handoff', error);
+      render(collectCandidateArticles());
+      return;
+    }
+
+    await openTweetUrlInNewTab(record.tweetUrl);
+  }
+
   async function sendDraft(postId) {
     const record = state.drafts.get(postId);
     if (!record) return;
+    if (record.status === 'sending' || record.status === 'sent') return;
 
     const finalText = normalizeWhitespace(record.editedText || record.autoText);
     if (!finalText) return;
 
     const article = resolveArticle(postId, record.article);
     if (!article) {
-      record.status = 'failed';
-      record.error = 'This post is no longer mounted in the feed. Use Open Post first.';
-      render(collectCandidateArticles());
+      await sendDraftFromPostTab(record);
       return;
     }
     record.article = article;
@@ -1581,6 +1637,7 @@
     if (!isUserInteractingWithCard()) {
       render(items);
     }
+    processAutoSendRequests(items);
     processQueue();
   }
 
