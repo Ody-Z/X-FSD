@@ -9,6 +9,7 @@ import {
   buildManualDraftPrompt,
   buildSystemPrompt,
   buildUserMessage,
+  callGeminiResult,
   detectAutoDraftSkipReason,
   generateReply,
   parseAdaptiveDraftResult
@@ -81,6 +82,30 @@ describe('buildUserMessage', () => {
     assert.match(message, /Quoted post by @bhorowitz/);
     assert.match(message, /hate group list/);
     assert.match(message, /Reply to this post by @pmarca/);
+  });
+
+  it('includes quoted post image context when present', () => {
+    const message = buildUserMessage('gpt-5.5 great for hard tasks', {
+      posterHandle: '@gdb',
+      quotedTweet: {
+        posterHandle: '@elliotarledge',
+        text: 'KernelBench-Hard coming soon.',
+        url: 'https://x.com/elliotarledge/status/123',
+        media: [
+          {
+            type: 'image',
+            url: 'https://pbs.twimg.com/media/example?format=jpg&name=large',
+            altText: 'benchmark leaderboard'
+          }
+        ]
+      },
+      threadTweets: ['gpt-5.5 great for hard tasks']
+    });
+
+    assert.match(message, /Quoted post by @elliotarledge/);
+    assert.match(message, /https:\/\/x\.com\/elliotarledge\/status\/123/);
+    assert.match(message, /Quoted post image/);
+    assert.match(message, /benchmark leaderboard/);
   });
 
   it('includes linked article preview context when present', () => {
@@ -232,6 +257,20 @@ describe('detectAutoDraftSkipReason', () => {
     );
   });
 
+  it('keeps image-only quoted posts when media adds context', () => {
+    assert.equal(
+      detectAutoDraftSkipReason('', {
+        quotedTweet: {
+          posterHandle: '@bench',
+          media: [
+            { type: 'image', url: 'https://pbs.twimg.com/media/example?format=jpg&name=large' }
+          ]
+        }
+      }),
+      ''
+    );
+  });
+
   it('keeps link-only posts when a linked article preview adds context', () => {
     assert.equal(
       detectAutoDraftSkipReason('https://t.co/example', {
@@ -373,5 +412,55 @@ describe('generateReply', () => {
       posterHandle: '@elonmusk',
       threadTweets: ['test tweet']
     });
+  });
+});
+
+describe('callGeminiResult media payloads', () => {
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('attaches quoted images as inline data when Gemini API is used', async () => {
+    let geminiBody;
+    globalThis.fetch = async (url, opts = {}) => {
+      if (String(url).includes('pbs.twimg.com')) {
+        return {
+          ok: true,
+          headers: new Headers({
+            'content-type': 'image/jpeg',
+            'content-length': '4'
+          }),
+          arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer
+        };
+      }
+
+      geminiBody = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          candidates: [{ content: { parts: [{ text: 'mocked gemini reply' }] } }]
+        })
+      };
+    };
+
+    const result = await callGeminiResult('AIza-test', 'system', 'user', {
+      quotedTweet: {
+        text: 'quote',
+        media: [
+          { type: 'image', url: 'https://pbs.twimg.com/media/example?format=jpg&name=large' }
+        ]
+      }
+    });
+
+    assert.equal(result.text, 'mocked gemini reply');
+    assert.equal(geminiBody.contents[0].parts.length, 2);
+    assert.equal(geminiBody.contents[0].parts[1].inline_data.mime_type, 'image/jpeg');
+    assert.equal(geminiBody.contents[0].parts[1].inline_data.data, 'AQIDBA==');
   });
 });

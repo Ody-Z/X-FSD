@@ -19,6 +19,7 @@
   const DRAFT_HANDOFFS_KEY = 'xga_draft_handoffs';
   const SENT_POSTS_KEY = 'xga_sent_posts';
   const MAX_SENT_POSTS = 500;
+  const MAX_CONTEXT_MEDIA_ITEMS = 4;
   const MAX_ARTICLE_PREVIEW_TEXT_LENGTH = 1200;
   const STALE_POST_SKIP_REASON = 'Skipped because the post is older than 2 hours.';
   const LOG_PREFIX = '[XGA]';
@@ -155,17 +156,161 @@
     return findPosterHandles(article)[0] || '';
   }
 
+  function getStatusIdFromHref(href) {
+    const match = String(href || '').match(/\/status\/(\d+)/);
+    return match ? match[1] : '';
+  }
+
+  function normalizeMediaAltText(text) {
+    const altText = normalizeWhitespace(text || '');
+    if (/^(image|photo|picture|gif|animated gif)$/i.test(altText)) return '';
+    return altText;
+  }
+
+  function normalizeTweetMediaUrl(src) {
+    if (!src) return '';
+
+    try {
+      const url = new URL(src, window.location.origin);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      if (url.hostname === 'pbs.twimg.com' && url.pathname.startsWith('/media/')) {
+        url.searchParams.set('name', 'large');
+      }
+      return url.toString();
+    } catch {
+      return '';
+    }
+  }
+
+  function isTweetMediaImage(img) {
+    const src = img?.currentSrc || img?.src || img?.getAttribute?.('src') || '';
+    if (!src) return false;
+
+    try {
+      const url = new URL(src, window.location.origin);
+      if (url.hostname !== 'pbs.twimg.com') return false;
+      if (url.pathname.startsWith('/media/')) return true;
+      return /\/(ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)\//i.test(url.pathname);
+    } catch {
+      return false;
+    }
+  }
+
+  function findTweetMediaItems(root) {
+    if (!root?.querySelectorAll) return [];
+
+    const seen = new Set();
+    const items = [];
+    for (const img of Array.from(root.querySelectorAll('img'))) {
+      if (!isTweetMediaImage(img)) continue;
+
+      const url = normalizeTweetMediaUrl(img.currentSrc || img.src || img.getAttribute('src'));
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      items.push({
+        type: 'image',
+        url,
+        altText: normalizeMediaAltText(img.getAttribute('alt') || img.getAttribute('aria-label') || '')
+      });
+      if (items.length >= MAX_CONTEXT_MEDIA_ITEMS) break;
+    }
+
+    return items;
+  }
+
+  function findStatusUrlInRoot(root, excludedPostId = '') {
+    if (!root?.querySelectorAll) return '';
+
+    const links = Array.from(root.querySelectorAll('a[href*="/status/"]'));
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      const postId = getStatusIdFromHref(href);
+      if (!postId || postId === excludedPostId) continue;
+      return toAbsoluteUrl(href);
+    }
+
+    return '';
+  }
+
+  function getElementArea(element) {
+    const rect = element?.getBoundingClientRect?.();
+    if (!rect) return Number.POSITIVE_INFINITY;
+    return Math.max(1, rect.width) * Math.max(1, rect.height);
+  }
+
+  function findStatusRootForLink(article, link) {
+    const roleRoot = link.closest('[role="link"]');
+    if (roleRoot && roleRoot !== article && article.contains(roleRoot)) return roleRoot;
+
+    let candidate = null;
+    for (let node = link.parentElement; node && node !== article; node = node.parentElement) {
+      if (findTweetMediaItems(node).length > 0 || node.querySelector('[data-testid="tweetText"]')) {
+        candidate = node;
+        break;
+      }
+    }
+
+    return candidate || link.closest('div') || link;
+  }
+
+  function findQuotedTweetStatusRoots(article, excludedPostId = '') {
+    const roots = [];
+    const seen = new Set();
+    for (const link of Array.from(article.querySelectorAll('a[href*="/status/"]'))) {
+      const postId = getStatusIdFromHref(link.getAttribute('href') || '');
+      if (!postId || postId === excludedPostId) continue;
+
+      const root = findStatusRootForLink(article, link);
+      if (!root || root === article || !article.contains(root) || seen.has(root)) continue;
+      seen.add(root);
+      roots.push(root);
+    }
+
+    return roots.sort((a, b) => getElementArea(a) - getElementArea(b));
+  }
+
+  function findQuotedTweetRoot(article, textElement, statusRoots) {
+    const statusRoot = statusRoots.find((root) => root.contains(textElement));
+    if (statusRoot) return statusRoot;
+
+    const linkRoot = textElement?.closest?.('[role="link"]');
+    if (linkRoot && linkRoot !== article && article.contains(linkRoot)) return linkRoot;
+
+    for (let node = textElement?.parentElement; node && node !== article; node = node.parentElement) {
+      if (findTweetMediaItems(node).length > 0) return node;
+    }
+
+    return textElement?.parentElement || null;
+  }
+
   function findQuotedTweet(article) {
     const textEntries = findTweetTextEntries(article);
-    if (textEntries.length < 2) return null;
-
+    const mainPostId = findTweetId(article);
+    const statusRoots = findQuotedTweetStatusRoots(article, mainPostId);
     const handles = findPosterHandles(article);
     for (let index = 1; index < textEntries.length; index += 1) {
-      const text = textEntries[index]?.text;
-      if (!text) continue;
+      const entry = textEntries[index];
+      const root = findQuotedTweetRoot(article, entry?.element, statusRoots);
+      const text = entry?.text || '';
+      const media = findTweetMediaItems(root);
+      if (!text && media.length === 0) continue;
       return {
         text,
-        posterHandle: handles[index] || ''
+        posterHandle: findPosterHandle(root) || handles[index] || '',
+        url: findStatusUrlInRoot(root, mainPostId),
+        media
+      };
+    }
+
+    for (const root of statusRoots) {
+      const quotedText = findTweetText(root);
+      const media = findTweetMediaItems(root);
+      if (!quotedText && media.length === 0) continue;
+      return {
+        text: quotedText,
+        posterHandle: findPosterHandle(root) || handles[1] || '',
+        url: findStatusUrlInRoot(root, mainPostId),
+        media
       };
     }
 
@@ -417,7 +562,7 @@
         const text = findTweetText(article);
         const quotedTweet = findQuotedTweet(article);
         const linkedArticle = findLinkedArticlePreview(article);
-        if (!text && !quotedTweet?.text && !linkedArticle?.title && !linkedArticle?.excerpt) return null;
+        if (!text && !quotedTweet?.text && !quotedTweet?.media?.length && !linkedArticle?.title && !linkedArticle?.excerpt) return null;
 
         const rect = article.getBoundingClientRect();
         const posterHandle = findPosterHandle(article);

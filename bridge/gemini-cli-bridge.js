@@ -36,6 +36,15 @@ const BRIDGE_ROOT = path.join(os.tmpdir(), 'xga-gemini-cli-bridge');
 const BRIDGE_HOME_ROOT = path.join(BRIDGE_ROOT, 'home');
 const BRIDGE_WORKDIR = path.join(BRIDGE_ROOT, 'workdir');
 const BRIDGE_SYSTEM_PROMPT_PATH = path.join(BRIDGE_ROOT, 'system.md');
+const MAX_CONTEXT_MEDIA_ITEMS = 4;
+const MAX_MEDIA_DOWNLOAD_BYTES = 5 * 1024 * 1024;
+const MEDIA_DOWNLOAD_TIMEOUT_MS = 10000;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif'
+]);
 
 let runtimePromise = null;
 let activeInvocationCount = 0;
@@ -235,6 +244,168 @@ function buildCliPrompt(systemPrompt, userPrompt) {
     'Follow the system instructions exactly.',
     'Return only the requested final output.'
   ].join('\n');
+}
+
+function normalizeWhitespace(text) {
+  return typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : '';
+}
+
+function normalizeMediaUrl(url) {
+  if (typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return '';
+  return trimmed;
+}
+
+function normalizeMediaItems(media) {
+  if (!Array.isArray(media)) return [];
+
+  const seen = new Set();
+  const items = [];
+  for (const item of media) {
+    const url = normalizeMediaUrl(item?.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    items.push({
+      type: item?.type === 'video' ? 'video' : 'image',
+      url,
+      altText: normalizeWhitespace(item?.altText || '')
+    });
+    if (items.length >= MAX_CONTEXT_MEDIA_ITEMS) break;
+  }
+
+  return items;
+}
+
+function getPromptImageMedia(context) {
+  const quotedMedia = normalizeMediaItems(context?.quotedTweet?.media)
+    .map((item) => ({ ...item, source: 'quoted post' }));
+  const postMedia = normalizeMediaItems(context?.media)
+    .map((item) => ({ ...item, source: 'reply target post' }));
+
+  return [...quotedMedia, ...postMedia]
+    .filter((item) => item.type === 'image')
+    .slice(0, MAX_CONTEXT_MEDIA_ITEMS);
+}
+
+function inferImageMimeType(url, headerValue = '') {
+  const header = normalizeWhitespace(headerValue).split(';')[0].toLowerCase();
+  if (SUPPORTED_IMAGE_MIME_TYPES.has(header)) return header;
+
+  try {
+    const parsed = new URL(url);
+    const format = parsed.searchParams.get('format')?.toLowerCase();
+    if (format === 'jpg' || format === 'jpeg') return 'image/jpeg';
+    if (format === 'png') return 'image/png';
+    if (format === 'webp') return 'image/webp';
+    if (format === 'gif') return 'image/gif';
+
+    const pathname = parsed.pathname.toLowerCase();
+    if (/\.(jpe?g)$/.test(pathname)) return 'image/jpeg';
+    if (/\.png$/.test(pathname)) return 'image/png';
+    if (/\.webp$/.test(pathname)) return 'image/webp';
+    if (/\.gif$/.test(pathname)) return 'image/gif';
+  } catch {}
+
+  return '';
+}
+
+function extensionForMimeType(mimeType) {
+  switch (mimeType) {
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    default:
+      return 'jpg';
+  }
+}
+
+function sanitizeFilenamePart(value) {
+  return String(value || 'media')
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'media';
+}
+
+async function fetchImageBuffer(mediaItem) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), MEDIA_DOWNLOAD_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(mediaItem.url, {
+      signal: controller.signal,
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'User-Agent': 'XGA-Gemini-Bridge/1.0'
+      }
+    });
+    if (!res.ok) return null;
+
+    const contentLength = Number(res.headers.get('content-length') || '0');
+    if (contentLength > MAX_MEDIA_DOWNLOAD_BYTES) return null;
+
+    const mimeType = inferImageMimeType(mediaItem.url, res.headers.get('content-type') || '');
+    if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) return null;
+
+    const arrayBuffer = await res.arrayBuffer();
+    if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > MAX_MEDIA_DOWNLOAD_BYTES) return null;
+
+    return {
+      mimeType,
+      buffer: Buffer.from(arrayBuffer)
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function prepareCliImageReferences({ context, requestId, workdir }) {
+  const media = getPromptImageMedia(context);
+  if (media.length === 0) return [];
+
+  const mediaDir = path.join(workdir, 'xga-media');
+  await mkdir(mediaDir, { recursive: true });
+  const safeRequestId = sanitizeFilenamePart(requestId);
+  const refs = [];
+
+  for (let index = 0; index < media.length; index += 1) {
+    const item = media[index];
+    const image = await fetchImageBuffer(item);
+    if (!image) continue;
+
+    const ext = extensionForMimeType(image.mimeType);
+    const filename = `${safeRequestId}-${index + 1}.${ext}`;
+    const absolutePath = path.join(mediaDir, filename);
+    await writeFile(absolutePath, image.buffer);
+    refs.push({
+      ...item,
+      relativePath: path.relative(workdir, absolutePath)
+    });
+  }
+
+  return refs;
+}
+
+function appendCliImageReferences(userPrompt, imageRefs) {
+  if (!imageRefs.length) return userPrompt;
+
+  const lines = [
+    userPrompt,
+    '',
+    'Image attachments for vision context:'
+  ];
+
+  imageRefs.forEach((item, index) => {
+    const alt = item.altText ? ` alt="${item.altText}"` : '';
+    lines.push(`- ${item.source || 'post'} image ${index + 1}: @${item.relativePath}${alt}`);
+  });
+
+  return lines.join('\n');
 }
 
 function extractFirstJsonObject(text) {
@@ -548,11 +719,18 @@ async function invokeGeminiCli({
   const resolvedUserPrompt = typeof userPrompt === 'string' && userPrompt.trim()
     ? userPrompt
     : buildUserMessage(tweetText, context);
-  const prompt = buildCliPrompt(systemPrompt, resolvedUserPrompt);
+  const imageRefs = await prepareCliImageReferences({
+    context,
+    requestId,
+    workdir: runtime.workdir
+  });
+  const promptUserMessage = appendCliImageReferences(resolvedUserPrompt, imageRefs);
+  const prompt = buildCliPrompt(systemPrompt, promptUserMessage);
   logRequest(requestId, 'Prepared CLI prompt', {
     model,
     promptLength: prompt.length,
-    timeoutMs
+    timeoutMs,
+    imageAttachmentCount: imageRefs.length
   });
 
   return queueInvocation(async ({ queueWaitMs }) => {

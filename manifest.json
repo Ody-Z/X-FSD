@@ -14,6 +14,7 @@
     "https://api.moonshot.ai/*",
     "https://api.moonshot.cn/*",
     "https://generativelanguage.googleapis.com/*",
+    "https://pbs.twimg.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
