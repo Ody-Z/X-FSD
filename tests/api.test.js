@@ -82,6 +82,23 @@ describe('buildUserMessage', () => {
     assert.match(message, /hate group list/);
     assert.match(message, /Reply to this post by @pmarca/);
   });
+
+  it('includes linked article preview context when present', () => {
+    const message = buildUserMessage('Agents Need to Survive the Second Run', {
+      posterHandle: '@hnshah',
+      linkedArticle: {
+        title: 'Agents Need to Survive the Second Run',
+        excerpt: 'The first time an agent works, everyone gets excited. Then you try to use it again.',
+        url: 'https://x.com/i/articles/123'
+      },
+      threadTweets: ['Agents Need to Survive the Second Run']
+    });
+
+    assert.match(message, /Linked article preview from the X card/);
+    assert.match(message, /Title: Agents Need to Survive/);
+    assert.match(message, /Excerpt: The first time an agent works/);
+    assert.match(message, /URL: https:\/\/x\.com\/i\/articles\/123/);
+  });
 });
 
 describe('adaptive draft prompts', () => {
@@ -209,6 +226,19 @@ describe('detectAutoDraftSkipReason', () => {
         quotedTweet: {
           posterHandle: '@bhorowitz',
           text: 'They put my father R.I.P. on a hate group list and nearly destroyed his non-profit.'
+        }
+      }),
+      ''
+    );
+  });
+
+  it('keeps link-only posts when a linked article preview adds context', () => {
+    assert.equal(
+      detectAutoDraftSkipReason('https://t.co/example', {
+        linkedArticle: {
+          title: 'Agents Need to Survive the Second Run',
+          excerpt: 'The second run is where tool timeouts, state, and recovery start to matter.',
+          url: 'https://x.com/i/articles/123'
         }
       }),
       ''

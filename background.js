@@ -307,13 +307,13 @@ async function runDraftModel({
       });
     case GEMINI_MODEL:
       if (!settings.geminiApiKey) throw new Error('Gemini API key not set');
-      return callGeminiResult(settings.geminiApiKey, systemPrompt, userPrompt);
+      return callGeminiResult(settings.geminiApiKey, systemPrompt, userPrompt, context);
     case 'kimi-k2.5':
       if (!settings.moonshotApiKey) throw new Error('Moonshot API key not set');
       return callKimiResult(settings.moonshotApiKey, systemPrompt, userPrompt, settings.moonshotEndpoint);
     case 'claude-haiku':
       if (!settings.anthropicApiKey) throw new Error('Anthropic API key not set');
-      return callClaudeResult(settings.anthropicApiKey, systemPrompt, userPrompt);
+      return callClaudeResult(settings.anthropicApiKey, systemPrompt, userPrompt, context);
     default:
       throw new Error(`Unsupported active model: ${modelTarget.activeModel}`);
   }

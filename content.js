@@ -19,6 +19,7 @@
   const DRAFT_HANDOFFS_KEY = 'xga_draft_handoffs';
   const SENT_POSTS_KEY = 'xga_sent_posts';
   const MAX_SENT_POSTS = 500;
+  const MAX_ARTICLE_PREVIEW_TEXT_LENGTH = 1200;
   const STALE_POST_SKIP_REASON = 'Skipped because the post is older than 2 hours.';
   const LOG_PREFIX = '[XGA]';
 
@@ -53,6 +54,12 @@
 
   function normalizeWhitespace(text) {
     return typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function truncateText(text, maxLength) {
+    const value = typeof text === 'string' ? text.trim() : '';
+    if (!value || value.length <= maxLength) return value;
+    return `${value.slice(0, maxLength).trimEnd()}...`;
   }
 
   function normalizeHandleIdentifier(handle) {
@@ -163,6 +170,134 @@
     }
 
     return null;
+  }
+
+  function splitVisibleTextLines(text) {
+    return String(text || '')
+      .replace(/\u00a0/g, ' ')
+      .split('\n')
+      .map((line) => normalizeWhitespace(line))
+      .filter(Boolean);
+  }
+
+  function getElementHref(element) {
+    return element?.getAttribute?.('href') ||
+      element?.querySelector?.('a[href]')?.getAttribute('href') ||
+      '';
+  }
+
+  function toAbsoluteUrl(href) {
+    if (!href) return '';
+    try {
+      return new URL(href, window.location.origin).toString();
+    } catch {
+      return '';
+    }
+  }
+
+  function isLikelyArticleUrl(url) {
+    if (!url) return false;
+    return /\/i\/articles?\//i.test(url) ||
+      /\/articles?\//i.test(url) ||
+      /\/article(?:\/|$)/i.test(url);
+  }
+
+  function isXNavigationUrl(url) {
+    if (!url) return false;
+
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+
+    if (!/(^|\.)x\.com$/i.test(parsed.hostname) && !/(^|\.)twitter\.com$/i.test(parsed.hostname)) {
+      return false;
+    }
+
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    if (/^\/[^/]+\/status\/\d+$/i.test(pathname)) return true;
+    if (/^\/[^/]+$/i.test(pathname)) return true;
+    if (/^\/(home|explore|notifications|messages|search|hashtag)(\/|$)/i.test(pathname)) return true;
+    return false;
+  }
+
+  function cleanArticlePreviewLines(lines) {
+    const cleaned = [];
+    const seen = new Set();
+
+    for (const line of lines) {
+      let next = line.replace(/^x\s+article\s*/i, '').trim();
+      if (!next || /^x$/i.test(next) || /^article$/i.test(next)) continue;
+      if (/^show more$/i.test(next)) continue;
+
+      next = truncateText(next, MAX_ARTICLE_PREVIEW_TEXT_LENGTH);
+      const key = next.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cleaned.push(next);
+    }
+
+    return cleaned;
+  }
+
+  function getArticlePreviewCandidates(article) {
+    const candidates = new Set(Array.from(article.querySelectorAll('a[href], [role="link"]')));
+    for (const element of article.querySelectorAll('span, div')) {
+      const text = normalizeWhitespace(element.textContent || '');
+      if (!/^x\s+article$/i.test(text) && !/^article$/i.test(text)) continue;
+      const container = element.closest('a[href], [role="link"]');
+      if (container) candidates.add(container);
+    }
+    return Array.from(candidates);
+  }
+
+  function findLinkedArticlePreview(article) {
+    const candidates = [];
+
+    for (const element of getArticlePreviewCandidates(article)) {
+      if (element.closest('[data-testid="User-Name"]')) continue;
+
+      const href = getElementHref(element);
+      const url = toAbsoluteUrl(href);
+      const rawLines = splitVisibleTextLines(element.innerText || element.textContent || '');
+      const rawText = normalizeWhitespace(rawLines.join(' '));
+      if (!rawText) continue;
+
+      const hasArticleLabel = rawLines.some((line) => /^x\s+article$/i.test(line) || /^article$/i.test(line));
+      const articleUrl = isLikelyArticleUrl(url);
+      const hasLongPreviewText = rawText.length >= 80;
+      if (!hasArticleLabel && !articleUrl && !hasLongPreviewText) continue;
+      if (isXNavigationUrl(url) && !hasArticleLabel && !articleUrl) continue;
+
+      const lines = cleanArticlePreviewLines(rawLines);
+      if (lines.length === 0) continue;
+
+      const [title, ...rest] = lines;
+      const excerpt = truncateText(rest.join(' '), MAX_ARTICLE_PREVIEW_TEXT_LENGTH);
+      const score = (hasArticleLabel ? 1000 : 0) +
+        (articleUrl ? 500 : 0) +
+        rawText.length +
+        (excerpt ? 100 : 0);
+
+      candidates.push({
+        title: truncateText(title, MAX_ARTICLE_PREVIEW_TEXT_LENGTH),
+        excerpt,
+        url,
+        score
+      });
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+    if (!best) return null;
+
+    return {
+      title: best.title || '',
+      excerpt: best.excerpt || '',
+      url: best.url || ''
+    };
   }
 
   function findReplyButton(article) {
@@ -281,7 +416,8 @@
 
         const text = findTweetText(article);
         const quotedTweet = findQuotedTweet(article);
-        if (!text && !quotedTweet?.text) return null;
+        const linkedArticle = findLinkedArticlePreview(article);
+        if (!text && !quotedTweet?.text && !linkedArticle?.title && !linkedArticle?.excerpt) return null;
 
         const rect = article.getBoundingClientRect();
         const posterHandle = findPosterHandle(article);
@@ -298,6 +434,7 @@
             createdAt,
             posterHandle,
             quotedTweet,
+            linkedArticle,
             threadTweets: [text]
           }
         };
