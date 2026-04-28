@@ -21,7 +21,7 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
 const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '60000');
-const DEFAULT_CONCURRENCY = Number(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '2');
+const DEFAULT_CONCURRENCY = Math.max(1, Number.parseInt(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '3', 10) || 3);
 const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
 const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
 const TRACE_LOG_PATH = process.env.XGA_GEMINI_TRACE_LOG || '/tmp/xga-gemini-bridge.log';
@@ -33,9 +33,9 @@ const GEMINI_CONFIG_DIRNAME = '.gemini';
 const GEMINI_AUTH_FILES = ['google_accounts.json', 'installation_id', 'oauth_creds.json', 'state.json'];
 const GEMINI_STATUS_TTL_MS = 10000;
 const BRIDGE_ROOT = path.join(os.tmpdir(), 'xga-gemini-cli-bridge');
-const BRIDGE_HOME_ROOT = path.join(BRIDGE_ROOT, 'home');
-const BRIDGE_WORKDIR = path.join(BRIDGE_ROOT, 'workdir');
-const BRIDGE_SYSTEM_PROMPT_PATH = path.join(BRIDGE_ROOT, 'system.md');
+const BRIDGE_HOME_ROOT = path.join(BRIDGE_ROOT, 'slot-0', 'home');
+const BRIDGE_WORKDIR = path.join(BRIDGE_ROOT, 'slot-0', 'workdir');
+const BRIDGE_SYSTEM_PROMPT_PATH = path.join(BRIDGE_ROOT, 'slot-0', 'system.md');
 const MAX_CONTEXT_MEDIA_ITEMS = 4;
 const MAX_MEDIA_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 10000;
@@ -46,9 +46,10 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/gif'
 ]);
 
-let runtimePromise = null;
+const runtimePromises = new Map();
 let activeInvocationCount = 0;
 const pendingInvocations = [];
+const activeSlotIds = new Set();
 let geminiStatusCache = {
   value: null,
   expiresAt: 0
@@ -549,20 +550,48 @@ function buildBridgeSystemPrompt() {
   ].join('\n');
 }
 
-async function ensureGeminiRuntime({
-  rootDir = BRIDGE_ROOT,
-  homeRoot = BRIDGE_HOME_ROOT,
-  workdir = BRIDGE_WORKDIR,
-  systemPromptPath = BRIDGE_SYSTEM_PROMPT_PATH
-} = {}) {
-  if (runtimePromise) return runtimePromise;
+function getGeminiRuntimePaths(slotId = 0) {
+  const normalizedSlotId = Number.isInteger(slotId) && slotId >= 0 ? slotId : 0;
+  const rootDir = path.join(BRIDGE_ROOT, `slot-${normalizedSlotId}`);
+  return {
+    slotId: normalizedSlotId,
+    rootDir,
+    homeRoot: path.join(rootDir, 'home'),
+    workdir: path.join(rootDir, 'workdir'),
+    systemPromptPath: path.join(rootDir, 'system.md')
+  };
+}
 
-  runtimePromise = (async () => {
+async function ensureGeminiRuntime({
+  slotId = 0,
+  rootDir,
+  homeRoot,
+  workdir,
+  systemPromptPath
+} = {}) {
+  const defaultPaths = getGeminiRuntimePaths(slotId);
+  const runtime = {
+    slotId: defaultPaths.slotId,
+    rootDir: rootDir || defaultPaths.rootDir,
+    homeRoot: homeRoot || defaultPaths.homeRoot,
+    workdir: workdir || defaultPaths.workdir,
+    systemPromptPath: systemPromptPath || defaultPaths.systemPromptPath
+  };
+  const runtimeKey = [
+    runtime.rootDir,
+    runtime.homeRoot,
+    runtime.workdir,
+    runtime.systemPromptPath
+  ].join('\0');
+  const existing = runtimePromises.get(runtimeKey);
+  if (existing) return existing;
+
+  const runtimePromise = (async () => {
     const sourceConfigDir = path.join(os.homedir(), GEMINI_CONFIG_DIRNAME);
-    const targetConfigDir = path.join(homeRoot, GEMINI_CONFIG_DIRNAME);
+    const targetConfigDir = path.join(runtime.homeRoot, GEMINI_CONFIG_DIRNAME);
     await mkdir(targetConfigDir, { recursive: true });
-    await mkdir(workdir, { recursive: true });
-    await mkdir(rootDir, { recursive: true });
+    await mkdir(runtime.workdir, { recursive: true });
+    await mkdir(runtime.rootDir, { recursive: true });
 
     for (const fileName of GEMINI_AUTH_FILES) {
       try {
@@ -584,25 +613,22 @@ async function ensureGeminiRuntime({
       `${JSON.stringify(buildMinimalSettings(sourceSettings), null, 2)}\n`,
       'utf8'
     );
-    await writeFile(systemPromptPath, `${buildBridgeSystemPrompt()}\n`, 'utf8');
+    await writeFile(runtime.systemPromptPath, `${buildBridgeSystemPrompt()}\n`, 'utf8');
 
     logRequest('setup', 'Prepared Gemini runtime', {
-      homeRoot,
-      workdir,
-      systemPromptPath
+      slotId: runtime.slotId,
+      homeRoot: runtime.homeRoot,
+      workdir: runtime.workdir,
+      systemPromptPath: runtime.systemPromptPath
     });
 
-    return {
-      rootDir,
-      homeRoot,
-      workdir,
-      systemPromptPath
-    };
+    return runtime;
   })().catch((error) => {
-    runtimePromise = null;
+    runtimePromises.delete(runtimeKey);
     throw error;
   });
 
+  runtimePromises.set(runtimeKey, runtimePromise);
   return runtimePromise;
 }
 
@@ -639,24 +665,41 @@ function buildGeminiExecInvocation({
   };
 }
 
+function acquireInvocationSlot() {
+  for (let slotId = 0; slotId < DEFAULT_CONCURRENCY; slotId += 1) {
+    if (activeSlotIds.has(slotId)) continue;
+    activeSlotIds.add(slotId);
+    activeInvocationCount = activeSlotIds.size;
+    return slotId;
+  }
+
+  return -1;
+}
+
 function queueInvocation(task) {
   return new Promise((resolve, reject) => {
     const enqueuedAt = Date.now();
 
     const run = () => {
+      const slotId = acquireInvocationSlot();
+      if (slotId < 0) {
+        pendingInvocations.push(run);
+        return;
+      }
+
       const queueWaitMs = Date.now() - enqueuedAt;
-      activeInvocationCount += 1;
       Promise.resolve()
-        .then(() => task({ queueWaitMs }))
+        .then(() => task({ queueWaitMs, slotId }))
         .then(resolve, reject)
         .finally(() => {
-          activeInvocationCount = Math.max(0, activeInvocationCount - 1);
+          activeSlotIds.delete(slotId);
+          activeInvocationCount = activeSlotIds.size;
           const next = pendingInvocations.shift();
           if (next) next();
         });
     };
 
-    if (activeInvocationCount < DEFAULT_CONCURRENCY) {
+    if (activeSlotIds.size < DEFAULT_CONCURRENCY) {
       run();
       return;
     }
@@ -715,31 +758,35 @@ async function invokeGeminiCli({
   timeoutMs = DEFAULT_TIMEOUT_MS
 }) {
   const startedAt = nowNs();
-  const runtime = await ensureGeminiRuntime();
   const resolvedUserPrompt = typeof userPrompt === 'string' && userPrompt.trim()
     ? userPrompt
     : buildUserMessage(tweetText, context);
-  const imageRefs = await prepareCliImageReferences({
-    context,
-    requestId,
-    workdir: runtime.workdir
-  });
-  const promptUserMessage = appendCliImageReferences(resolvedUserPrompt, imageRefs);
-  const prompt = buildCliPrompt(systemPrompt, promptUserMessage);
-  logRequest(requestId, 'Prepared CLI prompt', {
-    model,
-    promptLength: prompt.length,
-    timeoutMs,
-    imageAttachmentCount: imageRefs.length
-  });
 
-  return queueInvocation(async ({ queueWaitMs }) => {
+  return queueInvocation(async ({ queueWaitMs, slotId }) => {
     if (queueWaitMs > 0) {
       logRequest(requestId, `Waited ${formatDurationMs(queueWaitMs)} in bridge queue`, {
         concurrency: DEFAULT_CONCURRENCY,
-        activeInvocationCount
+        activeInvocationCount,
+        slotId
       });
     }
+
+    const runtime = await ensureGeminiRuntime({ slotId });
+    const imageRefs = await prepareCliImageReferences({
+      context,
+      requestId,
+      workdir: runtime.workdir
+    });
+    const promptUserMessage = appendCliImageReferences(resolvedUserPrompt, imageRefs);
+    const prompt = buildCliPrompt(systemPrompt, promptUserMessage);
+    logRequest(requestId, 'Prepared CLI prompt', {
+      model,
+      promptLength: prompt.length,
+      timeoutMs,
+      imageAttachmentCount: imageRefs.length,
+      slotId,
+      homeRoot: runtime.homeRoot
+    });
 
     let lastMappedError = null;
 
@@ -755,7 +802,8 @@ async function invokeGeminiCli({
         });
         const { stdout } = await execFileProcessGroup(invocation.file, invocation.args, invocation.options);
         logRequest(requestId, `Gemini CLI process finished in ${formatDurationNs(execStartedAt)}`, {
-          attempt
+          attempt,
+          slotId
         });
 
         const parseStartedAt = nowNs();
@@ -785,6 +833,7 @@ async function invokeGeminiCli({
 
         logRequest(requestId, `Gemini CLI failed after ${formatDurationNs(startedAt)}`, {
           attempt,
+          slotId,
           code: error?.code,
           message: error?.message,
           mappedCode: mappedError.code,
@@ -958,7 +1007,9 @@ function createBridgeServer({
 }
 
 async function startBridgeServer() {
-  await ensureGeminiRuntime();
+  await Promise.all(
+    Array.from({ length: DEFAULT_CONCURRENCY }, (_, slotId) => ensureGeminiRuntime({ slotId }))
+  );
   await mkdir(path.dirname(TRACE_LOG_PATH), { recursive: true });
   if (RESET_TRACE_LOG_ON_START) {
     await writeFile(TRACE_LOG_PATH, '', 'utf8');
@@ -1004,6 +1055,7 @@ export {
   createBridgeServer,
   ensureGeminiRuntime,
   extractFirstJsonObject,
+  getGeminiRuntimePaths,
   getGeminiStatus,
   invokeGeminiCli,
   mapCliExecutionError,

@@ -519,6 +519,10 @@
     return pageContext.kind === 'home-feed';
   }
 
+  function isCurrentStatusDetail(postId, pageContext = getPageContext()) {
+    return pageContext.kind === 'status-detail' && pageContext.postId === postId;
+  }
+
   function getCandidatePreferenceScore(item) {
     let score = 0;
     if (item.article.closest('[role="dialog"]')) score += 4;
@@ -962,6 +966,17 @@
     return button;
   }
 
+  function isInteractiveCardTarget(target) {
+    return Boolean(
+      target?.closest?.('button, textarea, input, select, option, a, [contenteditable="true"]')
+    );
+  }
+
+  function keepTextInputKeyEventsLocal(textarea) {
+    textarea.addEventListener('keydown', (event) => event.stopPropagation());
+    textarea.addEventListener('keyup', (event) => event.stopPropagation());
+  }
+
   function createModelBadge(modelLabel) {
     const label = normalizeWhitespace(modelLabel).toLowerCase();
     if (!label) return null;
@@ -1016,6 +1031,7 @@
       textarea.value = record.editedText || record.autoText || '';
       textarea.placeholder = 'Draft will appear here';
       textarea.disabled = record.status === 'sending';
+      keepTextInputKeyEventsLocal(textarea);
       textarea.addEventListener('input', (event) => {
         record.editedText = event.target.value;
       });
@@ -1225,10 +1241,11 @@
     card.style.setProperty('--xga-depth', String(visualDepth));
     card.tabIndex = 0;
     card.addEventListener('click', (event) => {
-      if (event.target.closest('button, textarea, select, option, a')) return;
+      if (isInteractiveCardTarget(event.target)) return;
       toggleDeckCard(postId);
     });
     card.addEventListener('keydown', (event) => {
+      if (isInteractiveCardTarget(event.target)) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       toggleDeckCard(postId);
@@ -1293,6 +1310,7 @@
         textarea.value = recordOrEntry.editedText || recordOrEntry.autoText || '';
         textarea.placeholder = 'Draft will appear here';
         textarea.disabled = recordOrEntry.status === 'sending';
+        keepTextInputKeyEventsLocal(textarea);
         textarea.addEventListener('input', (event) => {
           recordOrEntry.editedText = event.target.value;
         });
@@ -1787,6 +1805,10 @@
   }
 
   async function openReplyComposer(article) {
+    if (!article?.isConnected) {
+      throw new Error('This post is no longer mounted in the feed.');
+    }
+
     const replyButton = findReplyButton(article);
     if (!replyButton) {
       throw new Error('Could not find the reply button for this post.');
@@ -1870,8 +1892,24 @@
     record.error = '';
     render(collectCandidateArticles());
 
+    let composer = null;
     try {
-      const composer = await openReplyComposer(record.article);
+      composer = await openReplyComposer(record.article);
+    } catch (error) {
+      if (record.tweetUrl && !isCurrentStatusDetail(record.postId)) {
+        console.warn(LOG_PREFIX, 'Inline send composer unavailable; opening post tab for auto-send', error);
+        await sendDraftFromPostTab(record);
+        return;
+      }
+
+      record.status = 'failed';
+      record.error = formatGenerationError(error);
+      console.error(LOG_PREFIX, 'Send failed', error);
+      render(collectCandidateArticles());
+      return;
+    }
+
+    try {
       insertTextIntoComposer(composer.textarea, finalText);
       await waitFor(() => normalizeWhitespace(composer.textarea.innerText || composer.textarea.textContent || '') === finalText, 2500).catch(() => true);
       const sendButton = await waitFor(() => {

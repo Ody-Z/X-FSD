@@ -8,6 +8,7 @@ import {
   buildMinimalSettings,
   createBridgeServer,
   extractFirstJsonObject,
+  getGeminiRuntimePaths,
   parseCliJsonOutput
 } from '../bridge/gemini-cli-bridge.js';
 
@@ -73,6 +74,16 @@ describe('buildBridgeSystemPrompt', () => {
 });
 
 describe('buildGeminiExecInvocation', () => {
+  it('creates separate runtime paths for each slot', () => {
+    const first = getGeminiRuntimePaths(0);
+    const second = getGeminiRuntimePaths(1);
+
+    assert.notEqual(first.homeRoot, second.homeRoot);
+    assert.notEqual(first.workdir, second.workdir);
+    assert.match(first.homeRoot, /slot-0/);
+    assert.match(second.homeRoot, /slot-1/);
+  });
+
   it('injects isolated runtime paths and prompt args', () => {
     const invocation = buildGeminiExecInvocation({
       geminiBin: 'gemini',

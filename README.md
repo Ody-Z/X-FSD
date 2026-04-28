@@ -81,6 +81,7 @@ Notes:
 - `Gemini API Key` is ignored in local CLI mode.
 - If reply generation says the bridge is unavailable, start it with `npm run bridge`.
 - Token usage is logged in the bridge trace and appended to `/tmp/xga-token-usage.csv` by default.
+- Gemini CLI requests use three isolated local runtime slots by default, each with its own copied auth/cache directory.
 - Optional overrides:
   - `XGA_GEMINI_BRIDGE_PORT`
   - `XGA_GEMINI_CLI_TIMEOUT_MS`
