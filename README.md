@@ -14,6 +14,8 @@ Chrome extension that generates voice-matched replies on X (Twitter) using Claud
 
 ```
 X-FSD/
+├── AGENTS.md              # Documentation directory for agents and maintainers
+├── docs/                  # Workflow and implementation docs
 ├── manifest.json          # Chrome extension manifest (MV3)
 ├── background.js          # Service worker — routes messages, manages prompt data
 ├── content.js             # Content script — detects feed posts, renders auto draft cards, sends replies
@@ -34,6 +36,10 @@ X-FSD/
     ├── icon48.png
     └── icon128.png
 ```
+
+## Implementation Docs
+
+Use [AGENTS.md](AGENTS.md) as the documentation directory. It links to focused docs for onboarding, auto drafts, model providers, local bridges, storage, token usage, and debugging.
 
 ## Setup
 
