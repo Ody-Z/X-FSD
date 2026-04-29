@@ -13,6 +13,7 @@ Syntax-check individual scripts:
 ```sh
 node --check content.js
 node --check background.js
+node --check analytics/analytics.js
 node --check bridge/gemini-cli-bridge.js
 node --check bridge/claude-code-bridge.js
 ```
@@ -31,6 +32,7 @@ Current tests cover:
 - skip rules,
 - provider call helpers,
 - token usage extraction and CSV formatting,
+- analytics classification, metric snapshots, and summary aggregation,
 - local bridge request payloads,
 - Gemini CLI output parsing and runtime slot path isolation,
 - Claude Code output/auth parsing and bridge invocation shape.
@@ -83,7 +85,7 @@ The extension could not reach `http://127.0.0.1:43117`. Start `npm run bridge` a
 
 ### `Gemini CLI timed out while generating a reply`
 
-The bridge killed a local `gemini` process after the request timeout. Check `/tmp/xga-gemini-bridge.log` for whether stdout/stderr stopped after `Loaded cached credentials.`. The Gemini bridge now uses isolated runtime slots to reduce shared cache stalls.
+The bridge timed out a local `gemini` process after the request timeout. Check `/tmp/xga-gemini-bridge.log` for whether stdout/stderr stopped after `Loaded cached credentials.`. The Gemini bridge rejects timed-out calls immediately, cleans the process group in the background, and uses isolated runtime slots to reduce shared cache stalls.
 
 ### `Claude Code is not authenticated`
 
@@ -100,6 +102,10 @@ Deck textareas stop keyboard event propagation. If this regresses, inspect `isIn
 ### Duplicate drafts after sending
 
 Check `xga_sent_posts` in Chrome local storage. Sent posts are persisted there and removed from future candidate scans.
+
+### Analytics metrics do not include profile clicks
+
+Check that the popup Analytics tab has a user-context X API token. X API v2 returns `user_profile_clicks` only for owned posts with private metric access; otherwise sync falls back to public metrics.
 
 ## Chrome Extension Reload
 

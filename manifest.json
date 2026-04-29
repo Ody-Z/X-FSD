@@ -5,6 +5,7 @@
   "description": "Generate voice-matched replies on X",
   "permissions": [
     "storage",
+    "alarms",
     "activeTab",
     "scripting"
   ],
@@ -14,6 +15,7 @@
     "https://api.moonshot.ai/*",
     "https://api.moonshot.cn/*",
     "https://generativelanguage.googleapis.com/*",
+    "https://api.x.com/*",
     "https://pbs.twimg.com/*",
     "http://127.0.0.1/*"
   ],

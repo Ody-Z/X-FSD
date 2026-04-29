@@ -9,6 +9,7 @@ Chrome extension that generates voice-matched replies on X (Twitter) using Claud
 - **Five model paths**: Claude Haiku 3.5 (Anthropic), Claude Code Haiku Local (macOS bridge), Kimi K2.5 (Moonshot), Gemini 3.1 Flash-Lite Preview (Google API), and Gemini CLI Local (macOS bridge)
 - **Web search**: All models can search for current context before replying
 - **Style learning**: Tracks how you edit AI-generated replies and adapts the auto prompt over time
+- **Reply analytics**: Tracks sent replies locally and can sync X API v2 impressions and profile clicks for owned replies
 
 ## File Structure
 
@@ -20,8 +21,12 @@ X-FSD/
 ├── background.js          # Service worker — routes messages, manages prompt data
 ├── content.js             # Content script — detects feed posts, renders auto draft cards, sends replies
 ├── content.css            # Styles for injected auto draft UI
+├── analytics/             # Extension analytics dashboard
 ├── lib/
-│   └── api.js             # Shared prompt builders + Claude/Kimi/Gemini API calls
+│   ├── api.js             # Shared prompt builders + Claude/Kimi/Gemini API calls
+│   ├── analytics.js       # Analytics classification, snapshots, and summaries
+│   ├── analytics-db.js    # IndexedDB wrapper for reply analytics
+│   └── x-api.js           # X API v2 metric sync helpers
 ├── bridge/
 │   ├── gemini-cli-bridge.js # Localhost bridge that shells out to Gemini CLI
 │   └── claude-code-bridge.js # Localhost bridge that shells out to Claude Code
@@ -57,6 +62,7 @@ Use [AGENTS.md](AGENTS.md) as the documentation directory. It links to focused d
    - Click the extension icon to open the popup
    - Complete **Onboarding** by choosing the chips and sample replies that fit your voice
    - Enter your API key(s), choose a model, and set your X username
+   - Optional: add an X API user access token in **Analytics** for impressions and profile clicks
    - Click **Save Settings**
 
 ## How Auto Works

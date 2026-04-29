@@ -119,31 +119,38 @@ function execFileProcessGroup(file, args, options = {}) {
     let timeoutId = null;
     let killId = null;
 
-    const cleanup = () => {
+    const cleanup = ({ clearKillTimer = true } = {}) => {
       if (timeoutId) clearTimeout(timeoutId);
-      if (killId) clearTimeout(killId);
+      if (clearKillTimer && killId) clearTimeout(killId);
     };
 
-    const rejectOnce = (error) => {
+    const rejectOnce = (error, cleanupOptions) => {
       if (settled) return;
       settled = true;
-      cleanup();
+      cleanup(cleanupOptions);
       reject(error);
+    };
+
+    const terminateProcessGroup = () => {
+      killProcessGroup(child.pid, 'SIGTERM');
+      if (!killId) {
+        killId = setTimeout(() => killProcessGroup(child.pid, 'SIGKILL'), 1000);
+        killId.unref?.();
+      }
     };
 
     const appendOutput = (streamName, chunk) => {
       const nextValue = streamName === 'stdout' ? stdout + chunk : stderr + chunk;
       const combinedLength = Buffer.byteLength(streamName === 'stdout' ? nextValue + stderr : stdout + nextValue);
       if (combinedLength > maxBuffer) {
-        killProcessGroup(child.pid, 'SIGTERM');
-        killId = setTimeout(() => killProcessGroup(child.pid, 'SIGKILL'), 1000);
+        terminateProcessGroup();
         rejectOnce(createCliError({
           file,
           code: 'ENOBUFS',
           stdout,
           stderr,
           killed: true
-        }));
+        }), { clearKillTimer: false });
         return;
       }
 
@@ -189,9 +196,15 @@ function execFileProcessGroup(file, args, options = {}) {
     if (timeout > 0) {
       timeoutId = setTimeout(() => {
         timedOut = true;
-        killProcessGroup(child.pid, 'SIGTERM');
-        killId = setTimeout(() => killProcessGroup(child.pid, 'SIGKILL'), 1000);
+        terminateProcessGroup();
+        rejectOnce(createCliError({
+          file,
+          stdout,
+          stderr,
+          timedOut: true
+        }), { clearKillTimer: false });
       }, timeout);
+      timeoutId.unref?.();
     }
   });
 }
@@ -1054,6 +1067,7 @@ export {
   buildMinimalSettings,
   createBridgeServer,
   ensureGeminiRuntime,
+  execFileProcessGroup,
   extractFirstJsonObject,
   getGeminiRuntimePaths,
   getGeminiStatus,

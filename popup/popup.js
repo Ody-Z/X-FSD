@@ -94,6 +94,7 @@ async function loadSettings() {
   document.getElementById('anthropicApiKey').value = settings.anthropicApiKey || '';
   document.getElementById('moonshotApiKey').value = settings.moonshotApiKey || '';
   document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
+  document.getElementById('xApiUserAccessToken').value = settings.xApiUserAccessToken || '';
   document.getElementById('moonshotEndpoint').value = settings.moonshotEndpoint || 'https://api.moonshot.cn/v1';
   updateModelHintAndFields(settings.activeModel || 'claude-haiku');
   loadVoiceProfile(settings.voiceProfile);
@@ -194,6 +195,44 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
     status.className = 'status error';
   }
   setTimeout(() => { status.textContent = ''; }, 2000);
+});
+
+document.getElementById('saveAnalyticsSettings').addEventListener('click', async () => {
+  const status = document.getElementById('analyticsStatus');
+  try {
+    await StorageHelper.saveSettings({
+      xApiUserAccessToken: document.getElementById('xApiUserAccessToken').value.trim()
+    });
+    showStatus(status, 'Analytics settings saved', 'success');
+  } catch (e) {
+    showStatus(status, e.message, 'error');
+  }
+});
+
+document.getElementById('openAnalyticsDashboard').addEventListener('click', async () => {
+  const status = document.getElementById('analyticsStatus');
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'OPEN_ANALYTICS_DASHBOARD' });
+    if (!response?.ok) throw new Error(response?.reason || 'Could not open analytics dashboard.');
+    showStatus(status, 'Dashboard opened', 'success');
+  } catch (e) {
+    showStatus(status, e.message, 'error');
+  }
+});
+
+document.getElementById('syncAnalyticsMetrics').addEventListener('click', async () => {
+  const status = document.getElementById('analyticsStatus');
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'SYNC_ANALYTICS_METRICS',
+      options: { force: true, limit: 50 }
+    });
+    if (!response?.ok) throw new Error(response?.reason || 'Metric sync failed.');
+    const privateNote = response.privateMetricsAvailable === false ? ' Public metrics only.' : '';
+    showStatus(status, `Synced ${response.synced || 0} replies.${privateNote}`, 'success');
+  } catch (e) {
+    showStatus(status, e.message, 'error');
+  }
 });
 
 // --- Onboarding ---

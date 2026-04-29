@@ -13,6 +13,7 @@ Fields:
 - `anthropicApiKey`
 - `moonshotApiKey`
 - `geminiApiKey`
+- `xApiUserAccessToken`
 - `activeModel`
 - `username`
 - `autoDraftsEnabled`
@@ -31,6 +32,8 @@ Fields:
 - `choiceSelections`
 
 `utils/storage.js` and `background.js` both merge saved settings with defaults so missing nested fields do not break older installs.
+
+`xApiUserAccessToken` is optional. When present, analytics sync uses it as a user-context X API v2 token for owned reply metrics.
 
 ### `prompt_auto`
 
@@ -87,6 +90,23 @@ Each value stores:
 - sent time.
 
 The registry is capped at 500 entries.
+
+## IndexedDB
+
+### `xga_analytics`
+
+Owned by `background.js` and read by `analytics/analytics.js`. Stores sent reply analytics in the `replyEvents` object store.
+
+Each reply event stores:
+
+- target post id, URL, author handle, text, created time, category, and extracted traits,
+- reply post id and URL when resolved,
+- final reply text, AI draft text, edited flag, strategy, base tone, reply type, model label, and sent time,
+- latest metric snapshot,
+- metric snapshot history,
+- sync status, last attempt, next attempt, and error.
+
+Metric snapshots store impressions, profile clicks, profile intent, public engagement counts, and whether private metrics were available.
 
 ## Content Script State
 

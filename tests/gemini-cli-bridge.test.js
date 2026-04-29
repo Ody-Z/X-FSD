@@ -7,6 +7,7 @@ import {
   buildGeminiExecInvocation,
   buildMinimalSettings,
   createBridgeServer,
+  execFileProcessGroup,
   extractFirstJsonObject,
   getGeminiRuntimePaths,
   parseCliJsonOutput
@@ -118,6 +119,31 @@ describe('buildCliPrompt', () => {
     const prompt = buildCliPrompt('system prompt', 'user prompt');
     assert.match(prompt, /System instructions:/);
     assert.match(prompt, /user prompt/);
+  });
+});
+
+describe('execFileProcessGroup', () => {
+  it('rejects on timeout without waiting for inherited stdio from detached descendants', async () => {
+    const script = `
+      const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], {
+        detached: true,
+        stdio: ['ignore', 'inherit', 'inherit']
+      });
+      child.unref();
+      setInterval(() => {}, 1000);
+    `;
+    const startedAt = Date.now();
+
+    await assert.rejects(
+      execFileProcessGroup(process.execPath, ['-e', script], {
+        timeout: 50,
+        maxBuffer: 1024 * 1024
+      }),
+      { code: 'ETIMEDOUT' }
+    );
+
+    assert.ok(Date.now() - startedAt < 500);
   });
 });
 

@@ -1230,6 +1230,35 @@
     ].slice(0, SENT_HISTORY_LIMIT);
   }
 
+  function createReplyAnalyticsEntry(record, finalText) {
+    const sentAt = Date.now();
+    return {
+      targetPostId: record.postId,
+      targetTweetUrl: record.tweetUrl || '',
+      targetHandle: record.posterHandle || '',
+      targetText: record.text || '',
+      targetCreatedAt: record.createdAt || 0,
+      targetAgeMinutesAtReply: record.createdAt ? Math.max(0, Math.round((sentAt - record.createdAt) / 60000)) : null,
+      replyText: finalText || '',
+      autoText: record.autoText || '',
+      edited: normalizeWhitespace(record.autoText || '') !== normalizeWhitespace(finalText || ''),
+      strategyType: record.strategyType || '',
+      baseTone: record.baseTone || '',
+      modelLabel: record.modelLabel || '',
+      context: record.context || null,
+      sentAt
+    };
+  }
+
+  function recordReplyAnalytics(record, finalText) {
+    chrome.runtime.sendMessage({
+      type: 'RECORD_ANALYTICS_REPLY',
+      entry: createReplyAnalyticsEntry(record, finalText)
+    }).catch((error) => {
+      console.warn(LOG_PREFIX, 'Could not record reply analytics event', error);
+    });
+  }
+
   function buildDeckCard(recordOrEntry, deckKind, depth = 0) {
     const postId = recordOrEntry.postId;
     const expanded = state.expandedDeckCardId === postId;
@@ -1923,6 +1952,7 @@
       record.error = '';
       rememberSentDraft(record, finalText);
       markPersistedSentPost(record, finalText);
+      recordReplyAnalytics(record, finalText);
 
       if (record.baseTone && record.autoText) {
         chrome.runtime.sendMessage({

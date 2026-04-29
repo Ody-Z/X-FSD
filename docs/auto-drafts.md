@@ -96,6 +96,7 @@ After successful send:
 - the record becomes `sent`,
 - sent history is updated for this session,
 - the persistent sent registry is updated,
+- a `RECORD_ANALYTICS_REPLY` message records the local analytics event,
 - a `SAVE_COMPARISON` message records original post, AI draft, user final text, strategy, base tone, and timestamp.
 
 ## Open-Post Auto-Send Handoff

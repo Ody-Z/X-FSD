@@ -24,6 +24,23 @@ import {
   reportLocalBridgeTrace
 } from './lib/local-cli.js';
 import { summarizeTokenUsage } from './lib/token-usage.js';
+import {
+  appendMetricsSnapshot,
+  buildMetricsSnapshot,
+  createReplyAnalyticsRecord,
+  isEventDueForMetricSync,
+  markAnalyticsSyncError
+} from './lib/analytics.js';
+import {
+  getAllReplyEvents,
+  putReplyEvent,
+  updateReplyEvent
+} from './lib/analytics-db.js';
+import {
+  fetchTweetMetricsByIds,
+  hasXApiUserToken,
+  resolveReplyPostId
+} from './lib/x-api.js';
 
 const SETTINGS_CACHE = {
   value: null
@@ -36,6 +53,8 @@ const AUTO_PROMPT_DATA_KEY = 'prompt_auto';
 const MAX_AUTO_COMPARISONS = 25;
 const QUICK_DRAFT_TIMEOUT_MS = 90000;
 const FULL_DRAFT_TIMEOUT_MS = 120000;
+const ANALYTICS_SYNC_ALARM = 'xga_analytics_sync';
+const ANALYTICS_SYNC_PERIOD_MINUTES = 60;
 
 function nowMs() {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -77,9 +96,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'OPEN_ANALYTICS_DASHBOARD') {
+    handleOpenAnalyticsDashboard().then(sendResponse).catch((error) => sendResponse({
+      ok: false,
+      reason: error.message
+    }));
+    return true;
+  }
+
   if (msg.type === 'GENERATE_DRAFT') {
     handleGenerateDraft(msg).then(sendResponse).catch((error) => sendResponse({
       status: 'failed',
+      reason: error.message
+    }));
+    return true;
+  }
+
+  if (msg.type === 'RECORD_ANALYTICS_REPLY') {
+    handleRecordAnalyticsReply(msg.entry).then(sendResponse).catch((error) => sendResponse({
+      ok: false,
+      reason: error.message
+    }));
+    return true;
+  }
+
+  if (msg.type === 'SYNC_ANALYTICS_METRICS') {
+    handleSyncAnalyticsMetrics(msg.options || {}).then(sendResponse).catch((error) => sendResponse({
+      ok: false,
       reason: error.message
     }));
     return true;
@@ -104,6 +147,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+if (chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== ANALYTICS_SYNC_ALARM) return;
+    handleSyncAnalyticsMetrics({ limit: 50 }).catch((error) => {
+      console.warn('[XGA][analytics] Scheduled metric sync failed', error);
+    });
+  });
+}
+
 function isAllowedXUrl(url) {
   try {
     const parsed = new URL(url);
@@ -123,11 +175,27 @@ async function handleOpenPostTab(url) {
   return { ok: true };
 }
 
+async function handleOpenAnalyticsDashboard() {
+  await chrome.tabs.create({
+    url: chrome.runtime.getURL('analytics/analytics.html'),
+    active: true
+  });
+  return { ok: true };
+}
+
+async function ensureAnalyticsSyncAlarm() {
+  if (!chrome.alarms?.create) return;
+  await chrome.alarms.create(ANALYTICS_SYNC_ALARM, {
+    periodInMinutes: ANALYTICS_SYNC_PERIOD_MINUTES
+  });
+}
+
 function getDefaultSettings() {
   return {
     anthropicApiKey: '',
     moonshotApiKey: '',
     geminiApiKey: '',
+    xApiUserAccessToken: '',
     activeModel: GEMINI_CLI_LOCAL_MODEL,
     username: '',
     autoDraftsEnabled: true,
@@ -153,6 +221,131 @@ async function getSettings() {
     }
   };
   return SETTINGS_CACHE.value;
+}
+
+async function resolveAnalyticsReplyIdentity(settings, event) {
+  if (event.replyPostId || !hasXApiUserToken(settings)) return event;
+
+  const resolved = await resolveReplyPostId({ settings, event });
+  if (!resolved?.id) return event;
+
+  return {
+    ...event,
+    replyPostId: resolved.id,
+    replyTweetUrl: resolved.tweetUrl || event.replyTweetUrl || '',
+    replyCreatedAt: resolved.createdAt || event.replyCreatedAt || 0
+  };
+}
+
+async function handleRecordAnalyticsReply(entry = {}) {
+  const settings = await getSettings();
+  let event = createReplyAnalyticsRecord({
+    ...entry,
+    ownerUsername: settings.username || entry.ownerUsername || ''
+  });
+
+  try {
+    event = await resolveAnalyticsReplyIdentity(settings, event);
+  } catch (error) {
+    event = markAnalyticsSyncError(event, error);
+  }
+
+  await putReplyEvent(event);
+  await ensureAnalyticsSyncAlarm();
+  return {
+    ok: true,
+    eventId: event.id,
+    replyPostId: event.replyPostId || ''
+  };
+}
+
+async function resolvePendingReplyIdentities(settings, events, now) {
+  const resolvedEvents = [];
+  for (const event of events) {
+    if (event.replyPostId || !hasXApiUserToken(settings)) {
+      resolvedEvents.push(event);
+      continue;
+    }
+
+    try {
+      const next = await resolveAnalyticsReplyIdentity(settings, event);
+      if (next !== event) await putReplyEvent(next);
+      resolvedEvents.push(next);
+    } catch (error) {
+      const failed = markAnalyticsSyncError(event, error, now);
+      await putReplyEvent(failed);
+      resolvedEvents.push(failed);
+    }
+  }
+  return resolvedEvents;
+}
+
+async function handleSyncAnalyticsMetrics(options = {}) {
+  const settings = await getSettings();
+  if (!hasXApiUserToken(settings)) {
+    return {
+      ok: false,
+      reason: 'X API User Access Token is not configured.'
+    };
+  }
+
+  const now = Date.now();
+  const force = options.force === true;
+  const limit = Number.isFinite(options.limit) ? options.limit : 50;
+  const allEvents = await getAllReplyEvents();
+  const recentlySent = allEvents
+    .filter((event) => !event.replyPostId)
+    .sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))
+    .slice(0, 20);
+  const resolvedEvents = await resolvePendingReplyIdentities(settings, recentlySent, now);
+  const eventById = new Map(allEvents.map((event) => [event.id, event]));
+  for (const event of resolvedEvents) eventById.set(event.id, event);
+
+  const dueEvents = Array.from(eventById.values())
+    .filter((event) => isEventDueForMetricSync(event, now, force))
+    .sort((a, b) => (a.sync?.nextAttemptAt || a.sentAt || 0) - (b.sync?.nextAttemptAt || b.sentAt || 0))
+    .slice(0, limit);
+
+  if (dueEvents.length === 0) {
+    return {
+      ok: true,
+      synced: 0,
+      resolvedReplyIds: resolvedEvents.filter((event) => event.replyPostId).length,
+      privateMetricsAvailable: null
+    };
+  }
+
+  const { tweets, privateMetricsAvailable, warning } = await fetchTweetMetricsByIds(
+    dueEvents.map((event) => event.replyPostId),
+    settings
+  );
+  const tweetById = new Map(tweets.map((tweet) => [tweet.id, tweet]));
+  let synced = 0;
+
+  for (const event of dueEvents) {
+    const tweet = tweetById.get(event.replyPostId);
+    if (!tweet) {
+      await updateReplyEvent(event.id, (current) => markAnalyticsSyncError(current, new Error('X API did not return this reply post.'), now));
+      continue;
+    }
+
+    const snapshot = buildMetricsSnapshot(
+      tweet,
+      now,
+      privateMetricsAvailable ? 'x-api-v2' : 'x-api-v2-public'
+    );
+    await updateReplyEvent(event.id, (current) => appendMetricsSnapshot(current, snapshot));
+    synced += 1;
+  }
+
+  return {
+    ok: true,
+    synced,
+    requested: dueEvents.length,
+    resolvedReplyIds: resolvedEvents.filter((event) => event.replyPostId).length,
+    privateMetricsAvailable,
+    warning: warning || ''
+  };
 }
 
 async function getToneData(tone) {
@@ -484,5 +677,7 @@ export {
   getSettings,
   getToneData,
   handleGenerateDraft,
+  handleRecordAnalyticsReply,
+  handleSyncAnalyticsMetrics,
   handleSaveComparison
 };

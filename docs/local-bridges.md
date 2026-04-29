@@ -67,7 +67,7 @@ The bridge:
 - queues requests onto free runtime slots,
 - downloads up to four prompt images into the slot workdir,
 - references images as relative file paths in the prompt,
-- kills timed-out process groups,
+- rejects timed-out calls immediately and kills their process groups in the background,
 - retries one timeout once,
 - parses the first JSON object from stdout,
 - maps common failures to structured bridge errors.

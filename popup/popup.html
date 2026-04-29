@@ -12,6 +12,7 @@
       <h1>X Growth Assistant</h1>
       <nav class="tabs">
         <button class="tab active" data-tab="settings">Settings</button>
+        <button class="tab" data-tab="analytics">Analytics</button>
         <button class="tab" data-tab="onboarding">Onboarding</button>
       </nav>
     </header>
@@ -62,6 +63,21 @@
       </div>
       <button id="saveSettings" class="btn btn-primary">Save Settings</button>
       <div id="settingsStatus" class="status"></div>
+    </section>
+
+    <!-- Analytics Tab -->
+    <section id="analytics" class="tab-content">
+      <div class="field">
+        <label for="xApiUserAccessToken">X API User Access Token</label>
+        <input type="password" id="xApiUserAccessToken" placeholder="OAuth 2.0 user token">
+        <p class="hint">Needed for reply impressions and profile clicks. Use a user-context token with `tweet.read users.read` scopes.</p>
+      </div>
+      <button id="saveAnalyticsSettings" class="btn btn-primary">Save Analytics Settings</button>
+      <div class="analytics-actions">
+        <button id="openAnalyticsDashboard" class="btn btn-secondary" type="button">Open Dashboard</button>
+        <button id="syncAnalyticsMetrics" class="btn btn-secondary" type="button">Sync Metrics</button>
+      </div>
+      <div id="analyticsStatus" class="status"></div>
     </section>
 
     <!-- Onboarding Tab -->
