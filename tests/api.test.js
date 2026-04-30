@@ -283,6 +283,32 @@ describe('detectAutoDraftSkipReason', () => {
       ''
     );
   });
+
+  it('skips short link teaser posts with a linked article preview', () => {
+    assert.equal(
+      detectAutoDraftSkipReason('To get all my takes without an algorithmic filter, subscribe to my newsletter:', {
+        linkedArticle: {
+          title: 'AI by Aakash | Substack',
+          excerpt: 'Everything you need to know about AI and nothing more.',
+          url: 'https://aibyaakash.com'
+        }
+      }),
+      'Short link teaser skipped by rule.'
+    );
+  });
+
+  it('keeps short substantive posts with a linked article preview', () => {
+    assert.equal(
+      detectAutoDraftSkipReason('Latency is the product surface now.', {
+        linkedArticle: {
+          title: 'Agents Need to Survive the Second Run',
+          excerpt: 'The second run is where tool timeouts, state, and recovery start to matter.',
+          url: 'https://x.com/i/articles/123'
+        }
+      }),
+      ''
+    );
+  });
 });
 
 describe('parseAdaptiveDraftResult', () => {
