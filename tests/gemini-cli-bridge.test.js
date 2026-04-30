@@ -10,6 +10,7 @@ import {
   execFileProcessGroup,
   extractFirstJsonObject,
   getGeminiRuntimePaths,
+  mapCliExecutionError,
   parseCliJsonOutput
 } from '../bridge/gemini-cli-bridge.js';
 
@@ -40,6 +41,34 @@ describe('parseCliJsonOutput', () => {
       '{\n  "session_id": "a",\n  "response": "hello",\n  "stats": {}\n}'
     );
     assert.equal(parseCliJsonOutput(text), 'hello');
+  });
+});
+
+describe('mapCliExecutionError', () => {
+  it('maps Gemini stream premature close as transient without leaking stderr', () => {
+    const error = mapCliExecutionError(
+      new Error('Command failed: gemini exited with code 1'),
+      '',
+      [
+        'Loaded cached credentials.',
+        'Error when talking to Gemini API Full report available at: /tmp/gemini-client-error.json Error: Premature close',
+        "  code: 'ERR_STREAM_PREMATURE_CLOSE'"
+      ].join('\n')
+    );
+
+    assert.equal(error.code, 'gemini_transient');
+    assert.equal(error.status, 503);
+    assert.equal(error.message, 'Gemini CLI request was interrupted or rate limited. Try again in a moment.');
+  });
+
+  it('maps temporary Gemini capacity exhaustion as transient', () => {
+    const error = mapCliExecutionError(
+      new Error('Command timed out: gemini'),
+      '',
+      'Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 2s.'
+    );
+
+    assert.equal(error.code, 'gemini_transient');
   });
 });
 

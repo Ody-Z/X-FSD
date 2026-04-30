@@ -105,7 +105,7 @@ Local providers are called through `lib/local-cli.js`:
 - Gemini CLI: `http://127.0.0.1:43117/generate-reply`
 - Claude Code: `http://127.0.0.1:43118/generate-reply`
 
-Bridge responses include text and token usage when available. Network failures are rewritten to "start the bridge" guidance.
+Bridge responses include text and token usage when available. Network failures are rewritten to "start the bridge" guidance, and transient Gemini CLI stream/rate-limit failures are returned as structured `gemini_transient` errors.
 
 ## Style Learning
 

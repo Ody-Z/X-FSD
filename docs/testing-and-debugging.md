@@ -87,6 +87,10 @@ The extension could not reach `http://127.0.0.1:43117`. Start `npm run bridge` a
 
 The bridge timed out a local `gemini` process after the request timeout. Check `/tmp/xga-gemini-bridge.log` for whether stdout/stderr stopped after `Loaded cached credentials.`. The Gemini bridge rejects timed-out calls immediately, cleans the process group in the background, and uses isolated runtime slots to reduce shared cache stalls.
 
+### `Gemini CLI request was interrupted or rate limited`
+
+The local CLI reached Gemini but the upstream stream closed early, or Gemini reported temporary capacity/rate pressure. The bridge retries this once and then returns a short transient error instead of surfacing the CLI stack trace. Check `/tmp/xga-gemini-bridge.log` for `gemini_transient` and reduce `XGA_GEMINI_BRIDGE_CONCURRENCY` if this appears often during feed auto-drafting.
+
 ### `Claude Code is not authenticated`
 
 Run `claude auth login` locally, then restart `npm run bridge:claude`.

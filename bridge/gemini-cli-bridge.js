@@ -516,6 +516,14 @@ function mapCliExecutionError(error, stdout = '', stderr = '') {
 
   const combined = `${stderr}\n${stdout}`.trim();
 
+  if (/ERR_STREAM_PREMATURE_CLOSE|Premature close|exhausted your capacity|quota will reset|rate limit|429/i.test(combined)) {
+    return new BridgeError(
+      'gemini_transient',
+      'Gemini CLI request was interrupted or rate limited. Try again in a moment.',
+      503
+    );
+  }
+
   if (/sign in|login|log in|authenticate|authentication|api key|auth/i.test(combined)) {
     return new BridgeError('gemini_auth_required', 'Gemini CLI is not authenticated. Run `gemini` once locally and sign in.', 503);
   }
@@ -854,9 +862,10 @@ async function invokeGeminiCli({
           stderrTail
         });
 
-        if (mappedError.code === 'gemini_timeout' && attempt <= TIMEOUT_RETRY_LIMIT) {
-          logRequest(requestId, 'Retrying Gemini CLI after timeout', {
+        if (['gemini_timeout', 'gemini_transient'].includes(mappedError.code) && attempt <= TIMEOUT_RETRY_LIMIT) {
+          logRequest(requestId, 'Retrying Gemini CLI after transient failure', {
             attempt,
+            code: mappedError.code,
             nextAttempt: attempt + 1
           });
           continue;

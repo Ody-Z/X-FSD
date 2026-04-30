@@ -68,7 +68,7 @@ The bridge:
 - downloads up to four prompt images into the slot workdir,
 - references images as relative file paths in the prompt,
 - rejects timed-out calls immediately and kills their process groups in the background,
-- retries one timeout once,
+- retries one timeout or transient Gemini API stream failure once,
 - parses the first JSON object from stdout,
 - maps common failures to structured bridge errors.
 
