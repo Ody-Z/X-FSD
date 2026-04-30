@@ -8,7 +8,10 @@ import {
   getTimingWindow,
   summarizeAnalytics
 } from '../lib/analytics.js';
-import { findMatchingReplyTweet } from '../lib/x-api.js';
+import {
+  buildXOAuthAuthorizeUrl,
+  findMatchingReplyTweet
+} from '../lib/x-api.js';
 
 describe('analytics helpers', () => {
   it('classifies high-value target categories', () => {
@@ -97,6 +100,23 @@ describe('analytics helpers', () => {
 });
 
 describe('x api matching helpers', () => {
+  it('builds an OAuth authorize URL with PKCE fields', () => {
+    const url = new URL(buildXOAuthAuthorizeUrl({
+      clientId: 'client-123',
+      redirectUri: 'https://example.chromiumapp.org/x-oauth',
+      state: 'state-1',
+      codeChallenge: 'challenge-1'
+    }));
+
+    assert.equal(url.origin + url.pathname, 'https://x.com/i/oauth2/authorize');
+    assert.equal(url.searchParams.get('response_type'), 'code');
+    assert.equal(url.searchParams.get('client_id'), 'client-123');
+    assert.equal(url.searchParams.get('redirect_uri'), 'https://example.chromiumapp.org/x-oauth');
+    assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
+    assert.match(url.searchParams.get('scope'), /tweet\.read/);
+    assert.match(url.searchParams.get('scope'), /offline\.access/);
+  });
+
   it('matches a recent owned reply to the target post', () => {
     const match = findMatchingReplyTweet([
       {

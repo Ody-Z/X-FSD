@@ -124,6 +124,19 @@ header h1 {
   resize: vertical;
 }
 
+.copy-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.copy-row input[readonly] {
+  color: #cfd9de;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
 .char-count {
   position: absolute;
   right: 12px;
@@ -142,6 +155,11 @@ header h1 {
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .btn:hover {
@@ -176,7 +194,7 @@ header h1 {
 
 .analytics-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin-top: 10px;
 }
@@ -184,6 +202,32 @@ header h1 {
 .analytics-actions .btn {
   border-radius: 8px;
   padding: 10px 12px;
+}
+
+.connection-state {
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  background: #101214;
+  color: #71767b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+}
+
+.connection-state.connected {
+  border-color: rgba(0, 186, 124, 0.35);
+  color: #00ba7c;
+}
+
+.connection-state.error {
+  border-color: rgba(244, 33, 46, 0.35);
+  color: #ff7a83;
+}
+
+.analytics-manual-token {
+  margin-top: 12px;
 }
 
 .btn-danger {

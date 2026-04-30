@@ -13,7 +13,13 @@ Fields:
 - `anthropicApiKey`
 - `moonshotApiKey`
 - `geminiApiKey`
+- `xApiClientId`
 - `xApiUserAccessToken`
+- `xApiRefreshToken`
+- `xApiAccessTokenExpiresAt`
+- `xApiConnectedAt`
+- `xApiAuthorizedUsername`
+- `xApiScope`
 - `activeModel`
 - `username`
 - `autoDraftsEnabled`
@@ -33,7 +39,7 @@ Fields:
 
 `utils/storage.js` and `background.js` both merge saved settings with defaults so missing nested fields do not break older installs.
 
-`xApiUserAccessToken` is optional. When present, analytics sync uses it as a user-context X API v2 token for owned reply metrics.
+X API OAuth fields are optional. When connected, analytics sync uses the user-context access token for owned reply metrics and refreshes it with `xApiRefreshToken` when possible.
 
 ### `prompt_auto`
 

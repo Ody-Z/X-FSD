@@ -94,9 +94,11 @@ async function loadSettings() {
   document.getElementById('anthropicApiKey').value = settings.anthropicApiKey || '';
   document.getElementById('moonshotApiKey').value = settings.moonshotApiKey || '';
   document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
+  document.getElementById('xApiClientId').value = settings.xApiClientId || '';
   document.getElementById('xApiUserAccessToken').value = settings.xApiUserAccessToken || '';
   document.getElementById('moonshotEndpoint').value = settings.moonshotEndpoint || 'https://api.moonshot.cn/v1';
   updateModelHintAndFields(settings.activeModel || 'claude-haiku');
+  await updateXOAuthUi();
   loadVoiceProfile(settings.voiceProfile);
 
   if (!settings.onboardingCompleted) {
@@ -201,9 +203,94 @@ document.getElementById('saveAnalyticsSettings').addEventListener('click', async
   const status = document.getElementById('analyticsStatus');
   try {
     await StorageHelper.saveSettings({
+      xApiClientId: document.getElementById('xApiClientId').value.trim(),
       xApiUserAccessToken: document.getElementById('xApiUserAccessToken').value.trim()
     });
     showStatus(status, 'Analytics settings saved', 'success');
+    await updateXOAuthUi();
+  } catch (e) {
+    showStatus(status, e.message, 'error');
+  }
+});
+
+function formatExpiry(timestamp) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(new Date(timestamp));
+}
+
+async function updateXOAuthUi() {
+  const redirectInput = document.getElementById('xApiRedirectUri');
+  const connectionState = document.getElementById('xApiConnectionState');
+  const disconnectButton = document.getElementById('disconnectXApi');
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_X_OAUTH_CONFIG' });
+    if (!response?.ok) throw new Error(response?.reason || 'Could not load X OAuth config.');
+    redirectInput.value = response.redirectUri || '';
+    if (response.connected) {
+      const username = response.authorizedUsername ? `@${response.authorizedUsername}` : 'X account';
+      const expires = response.expiresAt ? `, token expires ${formatExpiry(response.expiresAt)}` : '';
+      connectionState.textContent = `Connected as ${username}${expires}`;
+      connectionState.className = 'connection-state connected';
+      disconnectButton.disabled = false;
+    } else {
+      connectionState.textContent = 'Not connected';
+      connectionState.className = 'connection-state';
+      disconnectButton.disabled = true;
+    }
+  } catch (e) {
+    connectionState.textContent = e.message;
+    connectionState.className = 'connection-state error';
+    disconnectButton.disabled = true;
+  }
+}
+
+document.getElementById('copyXApiRedirectUri').addEventListener('click', async () => {
+  const status = document.getElementById('analyticsStatus');
+  const value = document.getElementById('xApiRedirectUri').value.trim();
+  try {
+    await navigator.clipboard.writeText(value);
+    showStatus(status, 'Redirect URL copied', 'success');
+  } catch (e) {
+    showStatus(status, e.message, 'error');
+  }
+});
+
+document.getElementById('connectXApi').addEventListener('click', async () => {
+  const status = document.getElementById('analyticsStatus');
+  const button = document.getElementById('connectXApi');
+  const clientId = document.getElementById('xApiClientId').value.trim();
+  try {
+    button.disabled = true;
+    await StorageHelper.saveSettings({ xApiClientId: clientId });
+    showStatus(status, 'Opening X authorization...', 'success');
+    const response = await chrome.runtime.sendMessage({
+      type: 'START_X_OAUTH',
+      clientId
+    });
+    if (!response?.ok) throw new Error(response?.reason || 'X connection failed.');
+    const label = response.authorizedUsername ? `Connected @${response.authorizedUsername}` : 'Connected X';
+    showStatus(status, label, 'success');
+    await updateXOAuthUi();
+  } catch (e) {
+    showStatus(status, e.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.getElementById('disconnectXApi').addEventListener('click', async () => {
+  const status = document.getElementById('analyticsStatus');
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'DISCONNECT_X_OAUTH' });
+    if (!response?.ok) throw new Error(response?.reason || 'Could not disconnect X.');
+    document.getElementById('xApiUserAccessToken').value = '';
+    showStatus(status, 'Disconnected X', 'success');
+    await updateXOAuthUi();
   } catch (e) {
     showStatus(status, e.message, 'error');
   }

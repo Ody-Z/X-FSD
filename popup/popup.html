@@ -68,15 +68,34 @@
     <!-- Analytics Tab -->
     <section id="analytics" class="tab-content">
       <div class="field">
-        <label for="xApiUserAccessToken">X API User Access Token</label>
-        <input type="password" id="xApiUserAccessToken" placeholder="OAuth 2.0 user token">
-        <p class="hint">Needed for reply impressions and profile clicks. Use a user-context token with `tweet.read users.read` scopes.</p>
+        <label for="xApiClientId">X API OAuth 2.0 Client ID</label>
+        <input type="text" id="xApiClientId" placeholder="Client ID from X Developer Console">
+        <p class="hint">Use an OAuth 2.0 Native App with `tweet.read`, `users.read`, and `offline.access` scopes.</p>
       </div>
-      <button id="saveAnalyticsSettings" class="btn btn-primary">Save Analytics Settings</button>
+      <div class="field">
+        <label for="xApiRedirectUri">Redirect URL</label>
+        <div class="copy-row">
+          <input type="text" id="xApiRedirectUri" readonly>
+          <button id="copyXApiRedirectUri" class="btn btn-secondary" type="button">Copy</button>
+        </div>
+        <p class="hint">Add this exact URL to your X app's Callback URI / Redirect URL.</p>
+      </div>
+      <div id="xApiConnectionState" class="connection-state">Not connected</div>
+      <button id="connectXApi" class="btn btn-primary">Connect X</button>
       <div class="analytics-actions">
+        <button id="disconnectXApi" class="btn btn-secondary" type="button">Disconnect</button>
         <button id="openAnalyticsDashboard" class="btn btn-secondary" type="button">Open Dashboard</button>
         <button id="syncAnalyticsMetrics" class="btn btn-secondary" type="button">Sync Metrics</button>
       </div>
+      <details class="advanced-prompt analytics-manual-token">
+        <summary>Manual access token fallback</summary>
+        <div class="field">
+          <label for="xApiUserAccessToken">X API User Access Token</label>
+          <input type="password" id="xApiUserAccessToken" placeholder="OAuth 2.0 user token">
+          <p class="hint">Only use this for short-lived manual testing. Connect X is preferred.</p>
+        </div>
+        <button id="saveAnalyticsSettings" class="btn btn-secondary" type="button">Save Manual Token</button>
+      </details>
       <div id="analyticsStatus" class="status"></div>
     </section>
 

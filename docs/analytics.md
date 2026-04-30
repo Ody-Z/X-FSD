@@ -15,10 +15,21 @@ The analytics subsystem records sent replies locally, syncs X API v2 metrics whe
 
 Enterprise Engagement API is intentionally out of scope. The dashboard does not use `user_follows`, so it does not report follower conversion.
 
-The configured X API token should be a user-context OAuth 2.0 token with:
+The configured X app should use OAuth 2.0 user context with:
 
 - `tweet.read`
 - `users.read`
+- `offline.access`
+
+The popup Analytics tab shows the extension redirect URL. Add that exact URL to the X app's Callback URI / Redirect URL, paste the OAuth 2.0 Client ID into the popup, then click Connect X.
+
+Recommended X Developer Console settings:
+
+- App permissions: Read.
+- Type of App: Native App.
+- Callback URI / Redirect URL: the URL shown in the popup.
+- Website URL: any real HTTPS project, profile, or repository URL.
+- Do not request email from users.
 
 For owned reply posts, X API v2 can return:
 
@@ -49,7 +60,7 @@ Metric snapshots are scheduled around 1h, 6h, 24h, 72h, and 7d after sending.
 
 ## Dashboard
 
-The popup Analytics tab only stores the X API user access token and opens the dashboard. The full dashboard lives at:
+The popup Analytics tab stores the X API OAuth Client ID, starts the Connect X flow, disconnects stored tokens, syncs metrics, and opens the dashboard. The full dashboard lives at:
 
 ```text
 analytics/analytics.html

@@ -34,6 +34,9 @@ X Growth Assistant is a Chrome MV3 extension for generating and sending voice-ma
 - `SAVE_COMPARISON`: sent after a successful edited send; handled by `background.js`; appends an entry to `prompt_auto`.
 - `OPEN_POST_TAB`: sent by `content.js`; handled by `background.js`; opens an allowed `https://*.x.com/...` URL in a new active tab.
 - `OPEN_ANALYTICS_DASHBOARD`: sent by the popup; handled by `background.js`; opens the extension dashboard page.
+- `GET_X_OAUTH_CONFIG`: sent by the popup; handled by `background.js`; returns the extension redirect URL and connection status.
+- `START_X_OAUTH`: sent by the popup; handled by `background.js`; runs OAuth 2.0 PKCE through `chrome.identity.launchWebAuthFlow` and stores access/refresh tokens.
+- `DISCONNECT_X_OAUTH`: sent by the popup; handled by `background.js`; clears stored X OAuth tokens while keeping the Client ID.
 - `RECORD_ANALYTICS_REPLY`: sent by `content.js` after a successful send; handled by `background.js`; stores the sent reply event in IndexedDB and tries to resolve the owned reply id.
 - `SYNC_ANALYTICS_METRICS`: sent by the popup, dashboard, or alarm; handled by `background.js`; syncs X API v2 metrics into local snapshots.
 - `GET_TONE_DATA` and `SYNC_TONE_TO_STORAGE`: legacy tone-data helpers still exposed by `background.js`.

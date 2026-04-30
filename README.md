@@ -62,7 +62,7 @@ Use [AGENTS.md](AGENTS.md) as the documentation directory. It links to focused d
    - Click the extension icon to open the popup
    - Complete **Onboarding** by choosing the chips and sample replies that fit your voice
    - Enter your API key(s), choose a model, and set your X username
-   - Optional: add an X API user access token in **Analytics** for impressions and profile clicks
+   - Optional: open **Analytics**, copy the redirect URL into your X Developer App, paste the OAuth 2.0 Client ID, then click **Connect X** for impressions and profile clicks
    - Click **Save Settings**
 
 ## How Auto Works

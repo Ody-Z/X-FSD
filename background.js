@@ -37,9 +37,15 @@ import {
   updateReplyEvent
 } from './lib/analytics-db.js';
 import {
+  buildXOAuthAuthorizeUrl,
+  createPkcePair,
+  exchangeXOAuthCode,
+  fetchAuthenticatedUser,
   fetchTweetMetricsByIds,
   hasXApiUserToken,
-  resolveReplyPostId
+  refreshXOAuthToken,
+  resolveReplyPostId,
+  resolveReplyPostIds
 } from './lib/x-api.js';
 
 const SETTINGS_CACHE = {
@@ -98,6 +104,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'OPEN_ANALYTICS_DASHBOARD') {
     handleOpenAnalyticsDashboard().then(sendResponse).catch((error) => sendResponse({
+      ok: false,
+      reason: error.message
+    }));
+    return true;
+  }
+
+  if (msg.type === 'GET_X_OAUTH_CONFIG') {
+    handleGetXOAuthConfig().then(sendResponse).catch((error) => sendResponse({
+      ok: false,
+      reason: error.message
+    }));
+    return true;
+  }
+
+  if (msg.type === 'START_X_OAUTH') {
+    handleStartXOAuth(msg.clientId).then(sendResponse).catch((error) => sendResponse({
+      ok: false,
+      reason: error.message
+    }));
+    return true;
+  }
+
+  if (msg.type === 'DISCONNECT_X_OAUTH') {
+    handleDisconnectXOAuth().then(sendResponse).catch((error) => sendResponse({
       ok: false,
       reason: error.message
     }));
@@ -195,7 +225,13 @@ function getDefaultSettings() {
     anthropicApiKey: '',
     moonshotApiKey: '',
     geminiApiKey: '',
+    xApiClientId: '',
     xApiUserAccessToken: '',
+    xApiRefreshToken: '',
+    xApiAccessTokenExpiresAt: 0,
+    xApiConnectedAt: 0,
+    xApiAuthorizedUsername: '',
+    xApiScope: '',
     activeModel: GEMINI_CLI_LOCAL_MODEL,
     username: '',
     autoDraftsEnabled: true,
@@ -223,6 +259,157 @@ async function getSettings() {
   return SETTINGS_CACHE.value;
 }
 
+async function saveSettingsPatch(patch) {
+  const settings = await getSettings();
+  const nextSettings = {
+    ...settings,
+    ...patch
+  };
+  SETTINGS_CACHE.value = nextSettings;
+  await chrome.storage.local.set({ settings: nextSettings });
+  return nextSettings;
+}
+
+function getXOAuthRedirectUri() {
+  if (!chrome.identity?.getRedirectURL) {
+    throw new Error('Chrome identity API is unavailable. Reload the extension after updating permissions.');
+  }
+  return chrome.identity.getRedirectURL('x-oauth');
+}
+
+function normalizeTokenExpiry(tokenResponse) {
+  const expiresInSeconds = Number(tokenResponse?.expires_in);
+  return Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+    ? Date.now() + expiresInSeconds * 1000
+    : 0;
+}
+
+async function getFreshXApiSettings(settings = null) {
+  const current = settings || await getSettings();
+  const expiresAt = Number(current.xApiAccessTokenExpiresAt || 0);
+  const needsRefresh = Boolean(
+    current.xApiRefreshToken &&
+    current.xApiClientId &&
+    (!current.xApiUserAccessToken || !expiresAt || expiresAt - Date.now() <= 120000)
+  );
+  if (!needsRefresh) return current;
+
+  const tokenResponse = await refreshXOAuthToken({
+    clientId: current.xApiClientId,
+    refreshToken: current.xApiRefreshToken
+  });
+
+  return saveSettingsPatch({
+    xApiUserAccessToken: tokenResponse.access_token || current.xApiUserAccessToken || '',
+    xApiRefreshToken: tokenResponse.refresh_token || current.xApiRefreshToken || '',
+    xApiAccessTokenExpiresAt: normalizeTokenExpiry(tokenResponse),
+    xApiScope: tokenResponse.scope || current.xApiScope || ''
+  });
+}
+
+async function launchWebAuthFlow(options) {
+  if (!chrome.identity?.launchWebAuthFlow) {
+    throw new Error('Chrome identity API is unavailable. Reload the extension after updating permissions.');
+  }
+  return chrome.identity.launchWebAuthFlow(options);
+}
+
+async function handleGetXOAuthConfig() {
+  const settings = await getSettings();
+  const redirectUri = getXOAuthRedirectUri();
+  return {
+    ok: true,
+    redirectUri,
+    connected: Boolean(settings.xApiUserAccessToken || settings.xApiRefreshToken),
+    clientId: settings.xApiClientId || '',
+    authorizedUsername: settings.xApiAuthorizedUsername || '',
+    expiresAt: settings.xApiAccessTokenExpiresAt || 0,
+    scope: settings.xApiScope || ''
+  };
+}
+
+function parseOAuthRedirectUrl(redirectUrl, expectedState) {
+  if (!redirectUrl) throw new Error('X authorization was cancelled.');
+  const parsed = new URL(redirectUrl);
+  const error = parsed.searchParams.get('error');
+  if (error) throw new Error(parsed.searchParams.get('error_description') || error);
+
+  const state = parsed.searchParams.get('state');
+  if (!state || state !== expectedState) throw new Error('X authorization state did not match.');
+
+  const code = parsed.searchParams.get('code');
+  if (!code) throw new Error('X authorization did not return a code.');
+  return code;
+}
+
+async function handleStartXOAuth(clientId) {
+  const cleanClientId = String(clientId || '').trim();
+  if (!cleanClientId) throw new Error('Paste your X API OAuth 2.0 Client ID first.');
+
+  const redirectUri = getXOAuthRedirectUri();
+  const state = `xga-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const { codeVerifier, codeChallenge } = await createPkcePair();
+  const authUrl = buildXOAuthAuthorizeUrl({
+    clientId: cleanClientId,
+    redirectUri,
+    state,
+    codeChallenge
+  });
+
+  await saveSettingsPatch({ xApiClientId: cleanClientId });
+  const redirectUrl = await launchWebAuthFlow({
+    url: authUrl,
+    interactive: true
+  });
+  const code = parseOAuthRedirectUrl(redirectUrl, state);
+  const tokenResponse = await exchangeXOAuthCode({
+    clientId: cleanClientId,
+    redirectUri,
+    code,
+    codeVerifier
+  });
+
+  let authorizedUsername = '';
+  if (tokenResponse.access_token) {
+    try {
+      const user = await fetchAuthenticatedUser(tokenResponse.access_token);
+      authorizedUsername = user?.username || '';
+    } catch (error) {
+      console.warn('[XGA][analytics] Could not read connected X user', error);
+    }
+  }
+
+  await saveSettingsPatch({
+    xApiClientId: cleanClientId,
+    xApiUserAccessToken: tokenResponse.access_token || '',
+    xApiRefreshToken: tokenResponse.refresh_token || '',
+    xApiAccessTokenExpiresAt: normalizeTokenExpiry(tokenResponse),
+    xApiConnectedAt: Date.now(),
+    xApiAuthorizedUsername: authorizedUsername,
+    xApiScope: tokenResponse.scope || ''
+  });
+
+  await ensureAnalyticsSyncAlarm();
+  return {
+    ok: true,
+    redirectUri,
+    authorizedUsername,
+    expiresAt: normalizeTokenExpiry(tokenResponse)
+  };
+}
+
+async function handleDisconnectXOAuth() {
+  await saveSettingsPatch({
+    xApiUserAccessToken: '',
+    xApiRefreshToken: '',
+    xApiAccessTokenExpiresAt: 0,
+    xApiConnectedAt: 0,
+    xApiAuthorizedUsername: '',
+    xApiScope: ''
+  });
+  return { ok: true };
+}
+
 async function resolveAnalyticsReplyIdentity(settings, event) {
   if (event.replyPostId || !hasXApiUserToken(settings)) return event;
 
@@ -238,7 +425,7 @@ async function resolveAnalyticsReplyIdentity(settings, event) {
 }
 
 async function handleRecordAnalyticsReply(entry = {}) {
-  const settings = await getSettings();
+  const settings = await getFreshXApiSettings();
   let event = createReplyAnalyticsRecord({
     ...entry,
     ownerUsername: settings.username || entry.ownerUsername || ''
@@ -260,6 +447,12 @@ async function handleRecordAnalyticsReply(entry = {}) {
 }
 
 async function resolvePendingReplyIdentities(settings, events, now) {
+  const resolvedByEventId = await resolveReplyPostIds({
+    settings,
+    events,
+    maxResults: Math.max(20, Math.min(100, events.length * 2))
+  });
+
   const resolvedEvents = [];
   for (const event of events) {
     if (event.replyPostId || !hasXApiUserToken(settings)) {
@@ -268,7 +461,15 @@ async function resolvePendingReplyIdentities(settings, events, now) {
     }
 
     try {
-      const next = await resolveAnalyticsReplyIdentity(settings, event);
+      const resolved = resolvedByEventId.get(event.id);
+      const next = resolved?.id
+        ? {
+            ...event,
+            replyPostId: resolved.id,
+            replyTweetUrl: resolved.tweetUrl || event.replyTweetUrl || '',
+            replyCreatedAt: resolved.createdAt || event.replyCreatedAt || 0
+          }
+        : event;
       if (next !== event) await putReplyEvent(next);
       resolvedEvents.push(next);
     } catch (error) {
@@ -281,7 +482,7 @@ async function resolvePendingReplyIdentities(settings, events, now) {
 }
 
 async function handleSyncAnalyticsMetrics(options = {}) {
-  const settings = await getSettings();
+  const settings = await getFreshXApiSettings();
   if (!hasXApiUserToken(settings)) {
     return {
       ok: false,
@@ -296,7 +497,7 @@ async function handleSyncAnalyticsMetrics(options = {}) {
   const recentlySent = allEvents
     .filter((event) => !event.replyPostId)
     .sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))
-    .slice(0, 20);
+    .slice(0, Math.max(20, Math.min(100, limit)));
   const resolvedEvents = await resolvePendingReplyIdentities(settings, recentlySent, now);
   const eventById = new Map(allEvents.map((event) => [event.id, event]));
   for (const event of resolvedEvents) eventById.set(event.id, event);
