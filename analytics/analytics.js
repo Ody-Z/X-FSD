@@ -7,7 +7,6 @@ import {
 
 const elements = {
   rangeSelect: document.getElementById('rangeSelect'),
-  syncButton: document.getElementById('syncButton'),
   statusLine: document.getElementById('statusLine'),
   todayReplies: document.getElementById('todayReplies'),
   totalImpressions: document.getElementById('totalImpressions'),
@@ -22,6 +21,7 @@ const elements = {
 };
 
 let cachedEvents = [];
+let autoSyncInFlight = false;
 
 function formatNumber(value) {
   return new Intl.NumberFormat('en-US').format(value || 0);
@@ -231,30 +231,47 @@ async function loadEvents() {
   render();
 }
 
-async function syncMetrics() {
-  elements.syncButton.disabled = true;
-  setStatus('Syncing metrics from X API.');
+function describeSyncResponse(response) {
+  if (response?.authRequired) return response.reason || 'Connect X in the popup Analytics tab to sync metrics.';
+  const privateNote = response?.privateMetricsAvailable === false
+    ? ' Public metrics only; profile clicks require user-context metrics access.'
+    : '';
+  const resolved = response?.resolvedReplyIds ? ` Resolved ${response.resolvedReplyIds} reply IDs.` : '';
+  return `Metrics updated.${resolved}${privateNote}`;
+}
+
+async function syncMetrics({ force = false, quiet = false } = {}) {
+  if (autoSyncInFlight) return;
+  autoSyncInFlight = true;
+  if (!quiet) setStatus('Updating metrics from X API.');
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'SYNC_ANALYTICS_METRICS',
-      options: { force: true, limit: 100 }
+      options: { force, limit: 100 }
     });
-    if (!response?.ok) throw new Error(response?.reason || 'Metric sync failed.');
-    const note = response.privateMetricsAvailable === false
-      ? ' Synced public metrics only; profile clicks require user-context metrics access.'
-      : '';
-    setStatus(`Synced ${response.synced || 0} replies.${note}`, 'success');
+    if (!response?.ok) {
+      setStatus(describeSyncResponse(response), response?.authRequired ? 'error' : '');
+      return;
+    }
     await loadEvents();
+    if (!quiet || response.synced || response.resolvedReplyIds) {
+      setStatus(describeSyncResponse(response), 'success');
+    }
   } catch (error) {
-    setStatus(error.message, 'error');
+    setStatus(error.message || 'Metric sync failed.', 'error');
   } finally {
-    elements.syncButton.disabled = false;
+    autoSyncInFlight = false;
   }
 }
 
 elements.rangeSelect.addEventListener('change', render);
-elements.syncButton.addEventListener('click', syncMetrics);
 
-loadEvents().catch((error) => {
-  setStatus(error.message, 'error');
-});
+loadEvents()
+  .then(() => syncMetrics({ force: false, quiet: true }))
+  .catch((error) => {
+    setStatus(error.message, 'error');
+  });
+
+setInterval(() => {
+  void syncMetrics({ force: false, quiet: true });
+}, 5 * 60 * 1000);

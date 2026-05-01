@@ -307,21 +307,6 @@ document.getElementById('openAnalyticsDashboard').addEventListener('click', asyn
   }
 });
 
-document.getElementById('syncAnalyticsMetrics').addEventListener('click', async () => {
-  const status = document.getElementById('analyticsStatus');
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: 'SYNC_ANALYTICS_METRICS',
-      options: { force: true, limit: 50 }
-    });
-    if (!response?.ok) throw new Error(response?.reason || 'Metric sync failed.');
-    const privateNote = response.privateMetricsAvailable === false ? ' Public metrics only.' : '';
-    showStatus(status, `Synced ${response.synced || 0} replies.${privateNote}`, 'success');
-  } catch (e) {
-    showStatus(status, e.message, 'error');
-  }
-});
-
 // --- Onboarding ---
 function normalizeLines(text, { splitCommas = true } = {}) {
   const delimiter = splitCommas ? /[\n,]/ : /\n/;

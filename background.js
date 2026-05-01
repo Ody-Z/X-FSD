@@ -43,6 +43,7 @@ import {
   fetchAuthenticatedUser,
   fetchTweetMetricsByIds,
   hasXApiUserToken,
+  isXApiAuthError,
   refreshXOAuthToken,
   resolveReplyPostId,
   resolveReplyPostIds
@@ -186,6 +187,18 @@ if (chrome.alarms?.onAlarm) {
   });
 }
 
+if (chrome.runtime?.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    void ensureAnalyticsSyncAlarm();
+  });
+}
+
+if (chrome.runtime?.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    void ensureAnalyticsSyncAlarm();
+  });
+}
+
 function isAllowedXUrl(url) {
   try {
     const parsed = new URL(url);
@@ -294,10 +307,17 @@ async function getFreshXApiSettings(settings = null) {
   );
   if (!needsRefresh) return current;
 
-  const tokenResponse = await refreshXOAuthToken({
-    clientId: current.xApiClientId,
-    refreshToken: current.xApiRefreshToken
-  });
+  let tokenResponse;
+  try {
+    tokenResponse = await refreshXOAuthToken({
+      clientId: current.xApiClientId,
+      refreshToken: current.xApiRefreshToken
+    });
+  } catch (error) {
+    if (!isXApiAuthError(error)) throw error;
+    await handleDisconnectXOAuth();
+    throw new Error('X authorization expired. Reconnect X in the Analytics tab.');
+  }
 
   return saveSettingsPatch({
     xApiUserAccessToken: tokenResponse.access_token || current.xApiUserAccessToken || '',
@@ -439,6 +459,9 @@ async function handleRecordAnalyticsReply(entry = {}) {
 
   await putReplyEvent(event);
   await ensureAnalyticsSyncAlarm();
+  void handleSyncAnalyticsMetrics({ limit: 50 }).catch((error) => {
+    console.warn('[XGA][analytics] Auto metric sync after send failed', error);
+  });
   return {
     ok: true,
     eventId: event.id,
@@ -482,71 +505,84 @@ async function resolvePendingReplyIdentities(settings, events, now) {
 }
 
 async function handleSyncAnalyticsMetrics(options = {}) {
-  const settings = await getFreshXApiSettings();
-  if (!hasXApiUserToken(settings)) {
-    return {
-      ok: false,
-      reason: 'X API User Access Token is not configured.'
-    };
-  }
-
-  const now = Date.now();
-  const force = options.force === true;
-  const limit = Number.isFinite(options.limit) ? options.limit : 50;
-  const allEvents = await getAllReplyEvents();
-  const recentlySent = allEvents
-    .filter((event) => !event.replyPostId)
-    .sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))
-    .slice(0, Math.max(20, Math.min(100, limit)));
-  const resolvedEvents = await resolvePendingReplyIdentities(settings, recentlySent, now);
-  const eventById = new Map(allEvents.map((event) => [event.id, event]));
-  for (const event of resolvedEvents) eventById.set(event.id, event);
-
-  const dueEvents = Array.from(eventById.values())
-    .filter((event) => isEventDueForMetricSync(event, now, force))
-    .sort((a, b) => (a.sync?.nextAttemptAt || a.sentAt || 0) - (b.sync?.nextAttemptAt || b.sentAt || 0))
-    .slice(0, limit);
-
-  if (dueEvents.length === 0) {
-    return {
-      ok: true,
-      synced: 0,
-      resolvedReplyIds: resolvedEvents.filter((event) => event.replyPostId).length,
-      privateMetricsAvailable: null
-    };
-  }
-
-  const { tweets, privateMetricsAvailable, warning } = await fetchTweetMetricsByIds(
-    dueEvents.map((event) => event.replyPostId),
-    settings
-  );
-  const tweetById = new Map(tweets.map((tweet) => [tweet.id, tweet]));
-  let synced = 0;
-
-  for (const event of dueEvents) {
-    const tweet = tweetById.get(event.replyPostId);
-    if (!tweet) {
-      await updateReplyEvent(event.id, (current) => markAnalyticsSyncError(current, new Error('X API did not return this reply post.'), now));
-      continue;
+  try {
+    const settings = await getFreshXApiSettings();
+    if (!hasXApiUserToken(settings)) {
+      return {
+        ok: false,
+        authRequired: true,
+        reason: 'Connect X in the Analytics tab before metrics can sync.'
+      };
     }
 
-    const snapshot = buildMetricsSnapshot(
-      tweet,
-      now,
-      privateMetricsAvailable ? 'x-api-v2' : 'x-api-v2-public'
-    );
-    await updateReplyEvent(event.id, (current) => appendMetricsSnapshot(current, snapshot));
-    synced += 1;
-  }
+    const now = Date.now();
+    const force = options.force === true;
+    const limit = Number.isFinite(options.limit) ? options.limit : 50;
+    const allEvents = await getAllReplyEvents();
+    const recentlySent = allEvents
+      .filter((event) => !event.replyPostId)
+      .sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))
+      .slice(0, Math.max(20, Math.min(100, limit)));
+    const resolvedEvents = await resolvePendingReplyIdentities(settings, recentlySent, now);
+    const eventById = new Map(allEvents.map((event) => [event.id, event]));
+    for (const event of resolvedEvents) eventById.set(event.id, event);
 
-  return {
-    ok: true,
-    synced,
-    requested: dueEvents.length,
-    resolvedReplyIds: resolvedEvents.filter((event) => event.replyPostId).length,
-    privateMetricsAvailable,
-    warning: warning || ''
-  };
+    const dueEvents = Array.from(eventById.values())
+      .filter((event) => isEventDueForMetricSync(event, now, force))
+      .sort((a, b) => (a.sync?.nextAttemptAt || a.sentAt || 0) - (b.sync?.nextAttemptAt || b.sentAt || 0))
+      .slice(0, limit);
+
+    if (dueEvents.length === 0) {
+      return {
+        ok: true,
+        synced: 0,
+        resolvedReplyIds: resolvedEvents.filter((event) => event.replyPostId).length,
+        privateMetricsAvailable: null
+      };
+    }
+
+    const { tweets, privateMetricsAvailable, warning } = await fetchTweetMetricsByIds(
+      dueEvents.map((event) => event.replyPostId),
+      settings
+    );
+    const tweetById = new Map(tweets.map((tweet) => [tweet.id, tweet]));
+    let synced = 0;
+
+    for (const event of dueEvents) {
+      const tweet = tweetById.get(event.replyPostId);
+      if (!tweet) {
+        await updateReplyEvent(event.id, (current) => markAnalyticsSyncError(current, new Error('X API did not return this reply post.'), now));
+        continue;
+      }
+
+      const snapshot = buildMetricsSnapshot(
+        tweet,
+        now,
+        privateMetricsAvailable ? 'x-api-v2' : 'x-api-v2-public'
+      );
+      await updateReplyEvent(event.id, (current) => appendMetricsSnapshot(current, snapshot));
+      synced += 1;
+    }
+
+    return {
+      ok: true,
+      synced,
+      requested: dueEvents.length,
+      resolvedReplyIds: resolvedEvents.filter((event) => event.replyPostId).length,
+      privateMetricsAvailable,
+      warning: warning || ''
+    };
+  } catch (error) {
+    if (isXApiAuthError(error) || /authorization expired|unauthorized|unauthorised/i.test(error?.message || '')) {
+      await handleDisconnectXOAuth();
+      return {
+        ok: false,
+        authRequired: true,
+        reason: 'X authorization expired. Reconnect X in the Analytics tab.'
+      };
+    }
+    throw error;
+  }
 }
 
 async function getToneData(tone) {

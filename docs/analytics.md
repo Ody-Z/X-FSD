@@ -7,7 +7,7 @@ The analytics subsystem records sent replies locally, syncs X API v2 metrics whe
 1. `content.js` calls `RECORD_ANALYTICS_REPLY` after `sendDraft()` succeeds.
 2. `background.js` normalizes the event with `createReplyAnalyticsRecord()` and stores it in IndexedDB through `lib/analytics-db.js`.
 3. If an X API user access token is configured, `background.js` tries to resolve the owned reply post id by reading the configured user's recent posts.
-4. Manual dashboard sync or the hourly alarm calls `SYNC_ANALYTICS_METRICS`.
+4. Automatic sync runs after sends, when the dashboard opens, every five minutes while the dashboard stays open, and through the hourly background alarm.
 5. `lib/x-api.js` fetches X API v2 metrics for owned reply posts.
 6. Metric snapshots are appended to the local reply event and shown in `analytics/analytics.html`.
 
@@ -60,7 +60,7 @@ Metric snapshots are scheduled around 1h, 6h, 24h, 72h, and 7d after sending.
 
 ## Dashboard
 
-The popup Analytics tab stores the X API OAuth Client ID, starts the Connect X flow, disconnects stored tokens, syncs metrics, and opens the dashboard. The full dashboard lives at:
+The popup Analytics tab stores the X API OAuth Client ID, starts the Connect X flow, disconnects stored tokens, and opens the dashboard. The full dashboard lives at:
 
 ```text
 analytics/analytics.html
