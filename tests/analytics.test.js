@@ -10,6 +10,7 @@ import {
 } from '../lib/analytics.js';
 import {
   buildXOAuthAuthorizeUrl,
+  fetchAuthenticatedUser,
   findMatchingReplyTweet
 } from '../lib/x-api.js';
 
@@ -115,6 +116,74 @@ describe('x api matching helpers', () => {
     assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
     assert.match(url.searchParams.get('scope'), /tweet\.read/);
     assert.match(url.searchParams.get('scope'), /offline\.access/);
+    assert.match(url.toString(), /scope=tweet\.read%20users\.read%20offline\.access/);
+    assert.ok(!url.toString().includes('scope=tweet.read+users.read'));
+  });
+
+  it('verifies the OAuth user token with the minimal users/me request', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl = '';
+    let capturedAuth = '';
+    globalThis.fetch = async (url, options = {}) => {
+      capturedUrl = url;
+      capturedAuth = options.headers?.Authorization || '';
+      return new Response(JSON.stringify({
+        data: {
+          id: 'user-1',
+          username: 'odyzhou'
+        }
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+
+    try {
+      const user = await fetchAuthenticatedUser('user-token-1');
+      assert.equal(capturedUrl, 'https://api.x.com/2/users/me');
+      assert.equal(capturedAuth, 'Bearer user-token-1');
+      assert.equal(user.username, 'odyzhou');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to the legacy Twitter API host when api.x.com rejects the user token', async () => {
+    const originalFetch = globalThis.fetch;
+    const capturedUrls = [];
+    globalThis.fetch = async (url) => {
+      capturedUrls.push(url);
+      if (url === 'https://api.x.com/2/users/me') {
+        return new Response(JSON.stringify({
+          title: 'Unauthorized',
+          detail: 'Unauthorized',
+          type: 'about:blank'
+        }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({
+        data: {
+          id: 'user-1',
+          username: 'odyzhou'
+        }
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+
+    try {
+      const user = await fetchAuthenticatedUser('user-token-1');
+      assert.deepEqual(capturedUrls, [
+        'https://api.x.com/2/users/me',
+        'https://api.twitter.com/2/users/me'
+      ]);
+      assert.equal(user.username, 'odyzhou');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('matches a recent owned reply to the target post', () => {

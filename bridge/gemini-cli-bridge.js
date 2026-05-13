@@ -21,7 +21,11 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_PORT = Number(process.env.XGA_GEMINI_BRIDGE_PORT || '43117');
 const DEFAULT_TIMEOUT_MS = Number(process.env.XGA_GEMINI_CLI_TIMEOUT_MS || '60000');
-const DEFAULT_CONCURRENCY = Math.max(1, Number.parseInt(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '3', 10) || 3);
+const DEFAULT_CONCURRENCY = Math.max(1, Number.parseInt(process.env.XGA_GEMINI_BRIDGE_CONCURRENCY || '1', 10) || 1);
+const DEFAULT_STALL_TIMEOUT_MS = Math.max(
+  0,
+  Number.parseInt(process.env.XGA_GEMINI_CLI_STALL_TIMEOUT_MS || '45000', 10) || 0
+);
 const DEFAULT_MODEL = process.env.XGA_GEMINI_CLI_MODEL || GEMINI_CLI_MODEL;
 const DEFAULT_GEMINI_BIN = process.env.XGA_GEMINI_CLI_BIN || 'gemini';
 const TRACE_LOG_PATH = process.env.XGA_GEMINI_TRACE_LOG || '/tmp/xga-gemini-bridge.log';
@@ -104,6 +108,7 @@ function execFileProcessGroup(file, args, options = {}) {
   return new Promise((resolve, reject) => {
     const {
       timeout = 0,
+      stallTimeout = 0,
       maxBuffer = 1024 * 1024,
       ...spawnOptions
     } = options;
@@ -117,10 +122,12 @@ function execFileProcessGroup(file, args, options = {}) {
     let settled = false;
     let timedOut = false;
     let timeoutId = null;
+    let stallTimeoutId = null;
     let killId = null;
 
     const cleanup = ({ clearKillTimer = true } = {}) => {
       if (timeoutId) clearTimeout(timeoutId);
+      if (stallTimeoutId) clearTimeout(stallTimeoutId);
       if (clearKillTimer && killId) clearTimeout(killId);
     };
 
@@ -139,7 +146,27 @@ function execFileProcessGroup(file, args, options = {}) {
       }
     };
 
+    const timeoutOnce = () => {
+      timedOut = true;
+      terminateProcessGroup();
+      rejectOnce(createCliError({
+        file,
+        stdout,
+        stderr,
+        timedOut: true
+      }), { clearKillTimer: false });
+    };
+
+    const refreshStallTimeout = () => {
+      if (stallTimeout <= 0) return;
+      if (stallTimeoutId) clearTimeout(stallTimeoutId);
+      stallTimeoutId = setTimeout(timeoutOnce, stallTimeout);
+      stallTimeoutId.unref?.();
+    };
+
     const appendOutput = (streamName, chunk) => {
+      if (settled) return;
+      refreshStallTimeout();
       const nextValue = streamName === 'stdout' ? stdout + chunk : stderr + chunk;
       const combinedLength = Buffer.byteLength(streamName === 'stdout' ? nextValue + stderr : stdout + nextValue);
       if (combinedLength > maxBuffer) {
@@ -194,18 +221,10 @@ function execFileProcessGroup(file, args, options = {}) {
     });
 
     if (timeout > 0) {
-      timeoutId = setTimeout(() => {
-        timedOut = true;
-        terminateProcessGroup();
-        rejectOnce(createCliError({
-          file,
-          stdout,
-          stderr,
-          timedOut: true
-        }), { clearKillTimer: false });
-      }, timeout);
+      timeoutId = setTimeout(timeoutOnce, timeout);
       timeoutId.unref?.();
     }
+    refreshStallTimeout();
   });
 }
 
@@ -681,6 +700,7 @@ function buildGeminiExecInvocation({
         NO_COLOR: '1'
       },
       timeout: timeoutMs,
+      stallTimeout: DEFAULT_STALL_TIMEOUT_MS,
       maxBuffer: 2 * 1024 * 1024
     }
   };
@@ -1067,6 +1087,7 @@ export {
   DEFAULT_CONCURRENCY,
   DEFAULT_MODEL,
   DEFAULT_PORT,
+  DEFAULT_STALL_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   TRACE_LOG_PATH,
   appendTraceLog,

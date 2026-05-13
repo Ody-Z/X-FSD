@@ -62,6 +62,7 @@ const QUICK_DRAFT_TIMEOUT_MS = 90000;
 const FULL_DRAFT_TIMEOUT_MS = 120000;
 const ANALYTICS_SYNC_ALARM = 'xga_analytics_sync';
 const ANALYTICS_SYNC_PERIOD_MINUTES = 60;
+const X_OAUTH_REQUIRED_SCOPES = ['tweet.read', 'users.read'];
 
 function nowMs() {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -297,6 +298,63 @@ function normalizeTokenExpiry(tokenResponse) {
     : 0;
 }
 
+function assertXOAuthScopes(tokenResponse) {
+  const rawScope = typeof tokenResponse?.scope === 'string' ? tokenResponse.scope : '';
+  if (!rawScope) return;
+  const grantedScopes = new Set(rawScope.split(/[\s,]+/).filter(Boolean));
+  const missingScopes = X_OAUTH_REQUIRED_SCOPES.filter((scope) => !grantedScopes.has(scope));
+  if (missingScopes.length > 0) {
+    throw new Error(`X authorization is missing required scopes: ${missingScopes.join(', ')}.`);
+  }
+}
+
+function summarizeXApiErrorBody(body) {
+  if (!body || typeof body !== 'object') {
+    return typeof body === 'string' ? body.slice(0, 240) : '';
+  }
+
+  const parts = [];
+  const push = (label, value) => {
+    if (typeof value === 'string' && value.trim()) parts.push(`${label}: ${value.trim()}`);
+  };
+
+  push('title', body.title);
+  push('detail', body.detail);
+  push('error', body.error);
+  push('error_description', body.error_description);
+  push('type', body.type);
+
+  if (Array.isArray(body.errors)) {
+    for (const error of body.errors.slice(0, 2)) {
+      if (typeof error === 'string') {
+        push('error', error);
+      } else if (error && typeof error === 'object') {
+        push('error', error.message || error.detail || error.title || error.code);
+      }
+    }
+  }
+
+  if (parts.length > 0) return parts.join('; ').slice(0, 320);
+
+  try {
+    return JSON.stringify(body).slice(0, 320);
+  } catch {
+    return '';
+  }
+}
+
+function formatXOAuthStepError(step, error, extra = {}) {
+  const status = Number.isFinite(error?.status) && error.status > 0 ? ` (${error.status})` : '';
+  const bodySummary = summarizeXApiErrorBody(error?.body);
+  const scope = typeof extra.scope === 'string' && extra.scope.trim()
+    ? ` Granted scope: ${extra.scope.trim()}.`
+    : '';
+  const detail = bodySummary && bodySummary !== error?.message
+    ? ` X response: ${bodySummary}.`
+    : '';
+  return `${step} failed${status}: ${error?.message || 'Unknown X API error.'}.${detail}${scope}`;
+}
+
 async function getFreshXApiSettings(settings = null) {
   const current = settings || await getSettings();
   const expiresAt = Number(current.xApiAccessTokenExpiresAt || 0);
@@ -382,22 +440,36 @@ async function handleStartXOAuth(clientId) {
     interactive: true
   });
   const code = parseOAuthRedirectUrl(redirectUrl, state);
-  const tokenResponse = await exchangeXOAuthCode({
-    clientId: cleanClientId,
-    redirectUri,
-    code,
-    codeVerifier
-  });
-
-  let authorizedUsername = '';
-  if (tokenResponse.access_token) {
-    try {
-      const user = await fetchAuthenticatedUser(tokenResponse.access_token);
-      authorizedUsername = user?.username || '';
-    } catch (error) {
-      console.warn('[XGA][analytics] Could not read connected X user', error);
-    }
+  let tokenResponse;
+  try {
+    tokenResponse = await exchangeXOAuthCode({
+      clientId: cleanClientId,
+      redirectUri,
+      code,
+      codeVerifier
+    });
+  } catch (error) {
+    throw new Error(formatXOAuthStepError('X OAuth token exchange', error));
   }
+  assertXOAuthScopes(tokenResponse);
+  if (!tokenResponse.access_token) {
+    throw new Error('X authorization did not return an access token.');
+  }
+
+  let user;
+  try {
+    user = await fetchAuthenticatedUser(tokenResponse.access_token);
+  } catch (error) {
+    console.warn('[XGA][analytics] X OAuth user verification failed', {
+      status: error?.status || 0,
+      body: error?.body || null,
+      scope: tokenResponse.scope || ''
+    });
+    throw new Error(formatXOAuthStepError('X user token verification', error, {
+      scope: tokenResponse.scope || ''
+    }));
+  }
+  const authorizedUsername = user?.username || '';
 
   await saveSettingsPatch({
     xApiClientId: cleanClientId,

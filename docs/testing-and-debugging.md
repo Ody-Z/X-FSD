@@ -85,7 +85,7 @@ The extension could not reach `http://127.0.0.1:43117`. Start `npm run bridge` a
 
 ### `Gemini CLI timed out while generating a reply`
 
-The bridge timed out a local `gemini` process after the request timeout. Check `/tmp/xga-gemini-bridge.log` for whether stdout/stderr stopped after `Loaded cached credentials.`. The Gemini bridge rejects timed-out calls immediately, cleans the process group in the background, and uses isolated runtime slots to reduce shared cache stalls.
+The bridge timed out a local `gemini` process after the request timeout or after the stall timeout with no stdout/stderr. Check `/tmp/xga-gemini-bridge.log` for whether stdout/stderr stopped after `Loaded cached credentials.`. The Gemini bridge rejects timed-out calls immediately, cleans the process group in the background, and defaults to serial execution because Gemini CLI has shown credential-load stalls under parallel auto-drafting. If you raise `XGA_GEMINI_BRIDGE_CONCURRENCY`, watch the trace for repeated `Loaded cached credentials.` timeouts.
 
 ### `Gemini CLI request was interrupted or rate limited`
 

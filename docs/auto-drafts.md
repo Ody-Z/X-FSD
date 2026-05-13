@@ -13,6 +13,7 @@ Auto drafts are the main user-facing workflow. The content script scans the X ho
 - stale posts older than two hours are ignored or marked skipped,
 - own posts are skipped using the saved username,
 - short one-line link teasers/CTAs are skipped when the only extra context is a linked article preview,
+- X subscribe-card prompts such as `Click to Subscribe to ...` are skipped,
 - posts need usable text, quoted-post context, image context, or linked article preview context.
 
 The collector extracts:

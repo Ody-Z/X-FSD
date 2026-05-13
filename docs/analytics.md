@@ -22,6 +22,7 @@ The configured X app should use OAuth 2.0 user context with:
 - `offline.access`
 
 The popup Analytics tab shows the extension redirect URL. Add that exact URL to the X app's Callback URI / Redirect URL, paste the OAuth 2.0 Client ID into the popup, then click Connect X.
+The Connect X flow uses OAuth 2.0 PKCE, verifies the returned token with `GET /2/users/me`, and only stores the token after that check succeeds. X API v2 requests try `api.x.com` first and retry `api.twitter.com` when the newer host rejects an otherwise scoped user token with 401. If X rejects the token on both hosts, the popup shows the failing OAuth step plus the X API status/body summary instead of saving a token that would fail later in the dashboard.
 
 Recommended X Developer Console settings:
 

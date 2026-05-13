@@ -63,6 +63,7 @@ Strategies are defined in `AUTO_STRATEGY_CONFIG`:
 - the post is only a repost shell,
 - the post is mostly links without article/quote/media context,
 - the post is a short one-line link teaser or CTA with only a linked article preview,
+- the post is an X subscribe-card prompt such as `Click to Subscribe to ...`,
 - the content matches sensitive-event terms such as condolences, shootings, massacres, or memorials.
 
 `content.js` separately filters own posts, stale posts, promoted posts, unsupported pages, and posts without reply buttons.

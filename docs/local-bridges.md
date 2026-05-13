@@ -34,15 +34,16 @@ Defaults:
 - model: `flash-lite`,
 - timeout env default: `XGA_GEMINI_CLI_TIMEOUT_MS` or 60 seconds when no request timeout is provided,
 - runtime timeout from extension: 90 seconds for quick, 120 seconds for full,
-- concurrency: 3 isolated slots.
+- stall timeout: `XGA_GEMINI_CLI_STALL_TIMEOUT_MS` or 45 seconds without stdout/stderr,
+- concurrency: 1 isolated slot by default. Increase `XGA_GEMINI_BRIDGE_CONCURRENCY` only if local Gemini CLI is stable under parallel calls.
 
 ### Runtime Isolation
 
-The bridge prepares one runtime per concurrency slot:
+The bridge prepares one runtime per concurrency slot. The default uses only slot 0:
 
 - `/tmp/xga-gemini-cli-bridge/slot-0/home`
-- `/tmp/xga-gemini-cli-bridge/slot-1/home`
-- `/tmp/xga-gemini-cli-bridge/slot-2/home`
+- `/tmp/xga-gemini-cli-bridge/slot-1/home` if concurrency is raised,
+- `/tmp/xga-gemini-cli-bridge/slot-2/home` if concurrency is raised.
 
 Each slot has its own:
 
@@ -67,7 +68,7 @@ The bridge:
 - queues requests onto free runtime slots,
 - downloads up to four prompt images into the slot workdir,
 - references images as relative file paths in the prompt,
-- rejects timed-out calls immediately and kills their process groups in the background,
+- rejects timed-out or stalled calls immediately and kills their process groups in the background,
 - retries one timeout or transient Gemini API stream failure once,
 - parses the first JSON object from stdout,
 - maps common failures to structured bridge errors.
@@ -76,6 +77,7 @@ The bridge:
 
 - `XGA_GEMINI_BRIDGE_PORT`
 - `XGA_GEMINI_CLI_TIMEOUT_MS`
+- `XGA_GEMINI_CLI_STALL_TIMEOUT_MS`
 - `XGA_GEMINI_CLI_BIN`
 - `XGA_GEMINI_CLI_MODEL`
 - `XGA_GEMINI_BRIDGE_CONCURRENCY`

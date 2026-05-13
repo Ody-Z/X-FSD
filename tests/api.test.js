@@ -309,6 +309,22 @@ describe('detectAutoDraftSkipReason', () => {
       ''
     );
   });
+
+  it('skips subscribe card prompts even when the card has media context', () => {
+    assert.equal(
+      detectAutoDraftSkipReason('Click to Subscribe to garrytan', {
+        media: [
+          { type: 'image', url: 'https://pbs.twimg.com/card_img/example.jpg' }
+        ],
+        linkedArticle: {
+          title: 'GitHub - garrytan/gstack',
+          excerpt: 'Use Garry Tan\'s exact Claude Code setup.',
+          url: 'https://github.com/garrytan/gstack'
+        }
+      }),
+      'Subscription card skipped by rule.'
+    );
+  });
 });
 
 describe('parseAdaptiveDraftResult', () => {

@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BridgeError,
+  DEFAULT_CONCURRENCY,
+  DEFAULT_STALL_TIMEOUT_MS,
   buildBridgeSystemPrompt,
   buildCliPrompt,
   buildGeminiExecInvocation,
@@ -104,6 +106,11 @@ describe('buildBridgeSystemPrompt', () => {
 });
 
 describe('buildGeminiExecInvocation', () => {
+  it('defaults to serialized CLI execution with a stall timeout', () => {
+    assert.equal(DEFAULT_CONCURRENCY, 1);
+    assert.equal(DEFAULT_STALL_TIMEOUT_MS, 45000);
+  });
+
   it('creates separate runtime paths for each slot', () => {
     const first = getGeminiRuntimePaths(0);
     const second = getGeminiRuntimePaths(1);
@@ -140,6 +147,7 @@ describe('buildGeminiExecInvocation', () => {
     assert.equal(invocation.options.env.GEMINI_CLI_HOME, '/tmp/xga-home');
     assert.equal(invocation.options.env.GEMINI_SYSTEM_MD, '/tmp/xga-system.md');
     assert.equal(invocation.options.timeout, 12000);
+    assert.equal(invocation.options.stallTimeout, DEFAULT_STALL_TIMEOUT_MS);
   });
 });
 
@@ -167,6 +175,25 @@ describe('execFileProcessGroup', () => {
     await assert.rejects(
       execFileProcessGroup(process.execPath, ['-e', script], {
         timeout: 50,
+        maxBuffer: 1024 * 1024
+      }),
+      { code: 'ETIMEDOUT' }
+    );
+
+    assert.ok(Date.now() - startedAt < 500);
+  });
+
+  it('rejects on output stall before the full command timeout', async () => {
+    const script = `
+      process.stderr.write('Loaded cached credentials.\\n');
+      setInterval(() => {}, 1000);
+    `;
+    const startedAt = Date.now();
+
+    await assert.rejects(
+      execFileProcessGroup(process.execPath, ['-e', script], {
+        timeout: 1000,
+        stallTimeout: 50,
         maxBuffer: 1024 * 1024
       }),
       { code: 'ETIMEDOUT' }
