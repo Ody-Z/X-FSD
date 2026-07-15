@@ -137,6 +137,11 @@ describe('adaptive draft prompts', () => {
     assert.ok(prompt.systemPrompt.includes('Optimize for speed'));
     assert.ok(prompt.systemPrompt.includes('Never use --.'));
     assert.ok(prompt.systemPrompt.includes('Never exceed 2 sentences'));
+    assert.ok(prompt.systemPrompt.includes('case_data'));
+    assert.ok(prompt.systemPrompt.includes('first_hand'));
+    assert.ok(prompt.systemPrompt.includes('boundary_condition'));
+    assert.ok(prompt.systemPrompt.includes('The voice guide is the top-level writing constraint'));
+    assert.ok(prompt.systemPrompt.includes('Never invent a number, case, source, personal story'));
     assert.ok(!prompt.systemPrompt.includes('Style references from the user'));
   });
 
@@ -171,7 +176,7 @@ describe('adaptive draft prompts', () => {
       autoPromptData: {
         comparisons: [
           {
-            strategyType: 'hot_take',
+            strategyType: 'boundary_condition',
             originalPost: 'orig',
             aiGenerated: 'ai',
             userFinal: 'user'
@@ -181,7 +186,7 @@ describe('adaptive draft prompts', () => {
     });
 
     assert.ok(prompt.systemPrompt.includes('Write as Alex'));
-    assert.ok(prompt.systemPrompt.includes('Strategy: hot_take'));
+    assert.ok(prompt.systemPrompt.includes('Strategy: boundary_condition'));
     assert.ok(prompt.systemPrompt.includes('user'));
   });
 });
@@ -331,17 +336,17 @@ describe('parseAdaptiveDraftResult', () => {
   it('parses a ready result', () => {
     const result = parseAdaptiveDraftResult(JSON.stringify({
       status: 'ready',
-      strategyType: 'humor',
-      baseTone: 'funny',
-      reply: 'That joke has legs.',
+      strategyType: 'case_data',
+      baseTone: 'smart',
+      reply: 'Figma is the useful counterexample: multiplayer changed the workflow before AI changed the output.',
       reason: ''
     }));
 
     assert.deepEqual(result, {
       status: 'ready',
-      strategyType: 'humor',
-      baseTone: 'funny',
-      text: 'That joke has legs.',
+      strategyType: 'case_data',
+      baseTone: 'smart',
+      text: 'Figma is the useful counterexample: multiplayer changed the workflow before AI changed the output.',
       reason: ''
     });
   });

@@ -4,7 +4,7 @@ Chrome extension that generates voice-matched replies on X (Twitter) using Claud
 
 ## Features
 
-- **Auto reply strategy**: The model decides whether to skip a post, then picks the best reply strategy automatically
+- **Value-add reply strategy**: The model replies only when it can add a supported case/data point, a real first-hand judgment, or a precise boundary condition
 - **Voice onboarding**: Pick identity, interest, voice, and sample-reply chips; the extension builds the system prompt
 - **Five model paths**: Claude Haiku 3.5 (Anthropic), Claude Code Haiku Local (macOS bridge), Kimi K2.5 (Moonshot), Gemini 3.1 Flash-Lite Preview (Google API), and Gemini CLI Local (macOS bridge)
 - **Web search**: All models can search for current context before replying
@@ -75,7 +75,7 @@ Auto is the only user-facing reply mode. For each candidate post, the content sc
 4. The JSON must include `status`, `strategyType`, `baseTone`, `reply`, and `reason`.
 5. If the draft is ready, the UI shows it for edit/send. If you edit and send it, the final text is saved as an example for future full-quality regenerations.
 
-The internal strategies are `humor`, `deep_share`, `hot_take`, `news`, and `personal`. Users do not manually switch them; the model chooses one based on the post.
+The internal value moves are `case_data`, `first_hand`, and `boundary_condition`. Users do not manually switch them; the model chooses one only when it can add information or judgment that the original post did not already contain. The saved voice profile remains the top-level style constraint.
 
 ## Local Gemini CLI Mode (macOS)
 

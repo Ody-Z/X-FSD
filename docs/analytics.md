@@ -53,7 +53,7 @@ Primary metrics:
 
 Segmentation:
 
-- reply type, derived from `strategyType` and `baseTone`;
+- reply value move, normally `case_data`, `first_hand`, or `boundary_condition`, derived from `strategyType` with legacy labels retained for older events;
 - target category, derived from target text and extracted context;
 - target age at reply time.
 

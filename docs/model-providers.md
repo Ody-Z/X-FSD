@@ -36,8 +36,8 @@ Auto prompts require the model to return one JSON object:
 ```json
 {
   "status": "ready|skipped",
-  "strategyType": "humor|deep_share|hot_take|news|personal|null",
-  "baseTone": "supportive|question|smart|funny|null",
+  "strategyType": "case_data|first_hand|boundary_condition|null",
+  "baseTone": "supportive|smart|null",
   "reply": "string",
   "reason": "string"
 }
@@ -47,11 +47,11 @@ Auto prompts require the model to return one JSON object:
 
 Strategies are defined in `AUTO_STRATEGY_CONFIG`:
 
-- `humor` -> `funny`,
-- `deep_share` -> `smart`,
-- `hot_take` -> `smart`,
-- `news` -> `question`,
-- `personal` -> `supportive`.
+- `case_data` -> `smart`: add a specific case, counterexample, or number supported by supplied context or verified by an available search tool in the current run,
+- `first_hand` -> `supportive`: add a real experience found in the saved voice material or prompt context,
+- `boundary_condition` -> `smart`: identify the precise condition or missing variable that limits the original claim.
+
+Voice remains the top-level constraint for wording and style. The prompt rejects generic praise, paraphrase, empty questions, and unsupported facts or first-person stories. If none of the three value moves can be supported, the model must skip the post.
 
 ## Skip Rules
 

@@ -893,8 +893,8 @@ async function handleGenerateToneDraft(msg, requestId, settings, modelTarget) {
   const text = modelResult.text;
 
   const strategyType = msg.tone === 'enhance'
-    ? guessStrategyForTone(baseTone, msg.strategyTypeHint || 'deep_share')
-    : guessStrategyForTone(msg.tone, msg.strategyTypeHint || 'personal');
+    ? guessStrategyForTone(baseTone, msg.strategyTypeHint || 'boundary_condition')
+    : guessStrategyForTone(msg.tone, msg.strategyTypeHint || 'first_hand');
 
   return {
     status: 'ready',

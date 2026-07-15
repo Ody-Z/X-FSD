@@ -2,6 +2,9 @@
   'use strict';
 
   const STRATEGY_LABELS = {
+    case_data: 'Case / Data',
+    first_hand: 'First-hand',
+    boundary_condition: 'Boundary Condition',
     humor: 'Humor',
     deep_share: 'Deep Share',
     hot_take: 'Hot Take',

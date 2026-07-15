@@ -27,12 +27,12 @@ describe('analytics helpers', () => {
       targetText: 'We shipped a new AI workflow.',
       targetCreatedAt: 1000,
       replyText: 'this is the bit people miss',
-      strategyType: 'deep_share',
+      strategyType: 'case_data',
       sentAt: 121000
     }, 121000);
 
     assert.equal(record.targetAgeMinutesAtReply, 2);
-    assert.equal(record.replyType, 'deep_share');
+    assert.equal(record.replyType, 'case_data');
     assert.equal(record.targetCategory, 'ai');
     assert.equal(record.sync.status, 'pending');
   });
@@ -63,7 +63,7 @@ describe('analytics helpers', () => {
       targetPostId: '1',
       targetText: 'AI agents are getting useful',
       replyText: 'yep',
-      strategyType: 'deep_share',
+      strategyType: 'case_data',
       sentAt: 10
     }, 10), {
       capturedAt: 100,
@@ -76,7 +76,7 @@ describe('analytics helpers', () => {
       targetPostId: '2',
       targetText: 'What would you build?',
       replyText: 'curious about this',
-      strategyType: 'hot_take',
+      strategyType: 'boundary_condition',
       sentAt: 20
     }, 20), {
       capturedAt: 100,
@@ -89,7 +89,7 @@ describe('analytics helpers', () => {
     assert.equal(summary.totalReplies, 2);
     assert.equal(summary.totalImpressions, 1500);
     assert.equal(summary.totalProfileClicks, 40);
-    assert.equal(summary.byReplyType[0].key, 'hot_take');
+    assert.equal(summary.byReplyType[0].key, 'boundary_condition');
     assert.equal(summary.byTargetCategory.some((row) => row.key === 'ai'), true);
   });
 
